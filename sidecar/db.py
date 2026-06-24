@@ -44,6 +44,30 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Tier-2 classical-CV quality metrics, computed once per image and cached.
+-- One row per image; cheap to recompute, never needs a model.
+CREATE TABLE IF NOT EXISTS quality_metrics (
+    image_id INTEGER PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
+    sharpness REAL,               -- global Laplacian variance (normalized 1024px)
+    brightness REAL,              -- mean luma, 0-255
+    clip_low REAL,                -- fraction of near-black pixels (crushed shadows)
+    clip_high REAL,               -- fraction of near-white pixels (blown highlights)
+    subject_source TEXT,          -- 'face' | 'center' | 'none'
+    subject_sharpness REAL,
+    background_sharpness REAL,
+    focus_ratio REAL,             -- subject_sharpness / background_sharpness
+    fnumber REAL,                 -- EXIF aperture (f-number), nullable
+    is_blurry INTEGER NOT NULL DEFAULT 0,
+    is_dark INTEGER NOT NULL DEFAULT 0,
+    is_bright INTEGER NOT NULL DEFAULT 0,
+    subject_out_of_focus INTEGER NOT NULL DEFAULT 0,
+    analyzed_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS qm_blurry_idx ON quality_metrics(is_blurry);
+CREATE INDEX IF NOT EXISTS qm_dark_idx ON quality_metrics(is_dark);
+CREATE INDEX IF NOT EXISTS qm_oof_idx ON quality_metrics(subject_out_of_focus);
 """
 
 
@@ -93,3 +117,30 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
 def pack_embedding(values: Iterable[float]) -> bytes:
     arr = list(values)
     return struct.pack(f"{len(arr)}f", *arr)
+
+
+QUALITY_COLS = (
+    "sharpness", "brightness", "clip_low", "clip_high", "subject_source",
+    "subject_sharpness", "background_sharpness", "focus_ratio", "fnumber",
+    "is_blurry", "is_dark", "is_bright", "subject_out_of_focus", "analyzed_at",
+)
+
+
+def upsert_quality(conn: sqlite3.Connection, image_id: int, metrics: dict) -> None:
+    """Insert or replace the quality_metrics row for an image. `metrics` keys
+    are a subset of QUALITY_COLS; missing keys default to NULL/0."""
+    cols = ["image_id", *QUALITY_COLS]
+    vals = [image_id, *(metrics.get(c) for c in QUALITY_COLS)]
+    placeholders = ",".join("?" * len(cols))
+    conn.execute(
+        f"INSERT INTO quality_metrics({','.join(cols)}) VALUES({placeholders}) "
+        f"ON CONFLICT(image_id) DO UPDATE SET "
+        + ",".join(f"{c}=excluded.{c}" for c in QUALITY_COLS),
+        vals,
+    )
+
+
+def get_quality(conn: sqlite3.Connection, image_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM quality_metrics WHERE image_id = ?", (image_id,)
+    ).fetchone()

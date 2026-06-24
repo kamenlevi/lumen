@@ -6,7 +6,11 @@ import hashlib
 import io
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFile, ImageOps
+
+# Tolerate slightly truncated JPEGs (common with interrupted downloads / card
+# pulls) rather than failing the whole file.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 try:
     from pillow_heif import register_heif_opener
