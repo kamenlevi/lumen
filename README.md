@@ -58,6 +58,23 @@ python -m sidecar.search "sunset over water"
 python -m sidecar.server
 ```
 
+## Running in browser mode (Ubuntu 20.04 / no native build)
+
+The native Tauri shell needs **webkit2gtk-4.1**, which only ships on Ubuntu
+22.04+. On 20.04 (Focal, webkit2gtk-4.0 only) the desktop app can't compile —
+but the identical UI runs in a browser against the same sidecar:
+
+```bash
+./run.sh        # starts the Python sidecar + SvelteKit UI, prints the URL
+# open http://127.0.0.1:5173/chat/
+```
+
+What you get in browser mode: chat, search, library, the split-view results
+gallery — everything except the three native-shell features (global
+**Ctrl+Space** spotlight, tray icon, frontmost-folder scoping). Those need a
+desktop shell; on Focal that means either upgrading the OS or a separate
+GTK/WebKit-4.0 spotlight helper (planned).
+
 ## Running the desktop app
 
 ```bash
