@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
+from . import chat as chat_brain
 from . import clip_model, db
 from .index import IndexProgress, index_folder
 from .paths import app_data_dir, db_path, port_file
@@ -83,6 +84,14 @@ class SettingsIn(BaseModel):
     model_name: str | None = None
     pretrained: str | None = None
     device: str | None = None
+
+
+class ChatRenameIn(BaseModel):
+    title: str
+
+
+class ChatMessageIn(BaseModel):
+    text: str
 
 
 # ---------- endpoints ----------
@@ -310,6 +319,88 @@ def set_settings(body: SettingsIn) -> dict[str, Any]:
     if body.device:
         db.set_setting(conn, "device", body.device)
     return get_settings()
+
+
+# ---------- chat ----------
+
+def _message_dict(conn, row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "role": row["role"],
+        "content": row["content"],
+        "created_at": row["created_at"],
+        "results": db.hydrate_results(conn, row["results_json"]),
+    }
+
+
+@app.get("/chats")
+def list_chats() -> list[dict[str, Any]]:
+    conn = db.connect()
+    return [dict(r) for r in db.list_chats(conn)]
+
+
+@app.post("/chats")
+def create_chat() -> dict[str, Any]:
+    conn = db.connect()
+    chat_id = db.create_chat(conn)
+    return dict(db.get_chat(conn, chat_id))
+
+
+@app.get("/chats/{chat_id}")
+def get_chat(chat_id: int) -> dict[str, Any]:
+    conn = db.connect()
+    chat = db.get_chat(conn, chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    msgs = [_message_dict(conn, m) for m in db.get_messages(conn, chat_id)]
+    return {"chat": dict(chat), "messages": msgs}
+
+
+@app.patch("/chats/{chat_id}")
+def rename_chat(chat_id: int, body: ChatRenameIn) -> dict[str, Any]:
+    conn = db.connect()
+    if not db.get_chat(conn, chat_id):
+        raise HTTPException(status_code=404, detail="Chat not found")
+    db.rename_chat(conn, chat_id, body.title.strip() or "New chat")
+    return dict(db.get_chat(conn, chat_id))
+
+
+@app.delete("/chats/{chat_id}")
+def delete_chat(chat_id: int) -> dict[str, Any]:
+    conn = db.connect()
+    if not db.get_chat(conn, chat_id):
+        raise HTTPException(status_code=404, detail="Chat not found")
+    db.delete_chat(conn, chat_id)
+    return {"ok": True}
+
+
+@app.post("/chats/{chat_id}/messages")
+def post_message(chat_id: int, body: ChatMessageIn) -> dict[str, Any]:
+    conn = db.connect()
+    chat = db.get_chat(conn, chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty message")
+
+    history = db.get_messages(conn, chat_id)
+    # First user message in a fresh chat names the conversation.
+    if not history and chat["title"] == "New chat":
+        db.rename_chat(conn, chat_id, chat_brain._title_from(text))
+
+    user_id = db.add_message(conn, chat_id, "user", text)
+    reply_text, refs = chat_brain.respond(conn, history, text)
+    asst_id = db.add_message(conn, chat_id, "assistant", reply_text, refs)
+
+    user_row = conn.execute("SELECT * FROM chat_messages WHERE id = ?", (user_id,)).fetchone()
+    asst_row = conn.execute("SELECT * FROM chat_messages WHERE id = ?", (asst_id,)).fetchone()
+    return {
+        "user": _message_dict(conn, user_row),
+        "assistant": _message_dict(conn, asst_row),
+        "title": db.get_chat(conn, chat_id)["title"],
+    }
 
 
 # ---------- lifecycle ----------

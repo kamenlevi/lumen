@@ -68,6 +68,28 @@ CREATE TABLE IF NOT EXISTS quality_metrics (
 CREATE INDEX IF NOT EXISTS qm_blurry_idx ON quality_metrics(is_blurry);
 CREATE INDEX IF NOT EXISTS qm_dark_idx ON quality_metrics(is_dark);
 CREATE INDEX IF NOT EXISTS qm_oof_idx ON quality_metrics(subject_out_of_focus);
+
+-- Chat: multi-turn conversations with memory that persists across sessions.
+-- Unlike one-shot search, a chat is a thread of messages; assistant messages
+-- can carry photo results (stored as ordered id+score refs, hydrated live on
+-- read so deleted photos drop out).
+CREATE TABLE IF NOT EXISTS chats (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT 'New chat',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,            -- 'user' | 'assistant'
+    content TEXT NOT NULL,
+    results_json TEXT,            -- JSON: [{"id": int, "score": float}, ...] or NULL
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS chat_messages_chat_idx ON chat_messages(chat_id, id);
 """
 
 
@@ -144,3 +166,92 @@ def get_quality(conn: sqlite3.Connection, image_id: int) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM quality_metrics WHERE image_id = ?", (image_id,)
     ).fetchone()
+
+
+# ---------- chat ----------
+
+import json as _json
+import time as _time
+
+
+def create_chat(conn: sqlite3.Connection, title: str = "New chat") -> int:
+    now = _time.time()
+    cur = conn.execute(
+        "INSERT INTO chats(title, created_at, updated_at) VALUES(?, ?, ?)",
+        (title, now, now),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def list_chats(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """SELECT c.id, c.title, c.created_at, c.updated_at,
+                  COUNT(m.id) AS message_count
+             FROM chats c
+        LEFT JOIN chat_messages m ON m.chat_id = c.id
+         GROUP BY c.id
+         ORDER BY c.updated_at DESC"""
+    ).fetchall()
+
+
+def get_chat(conn: sqlite3.Connection, chat_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM chats WHERE id = ?", (chat_id,)).fetchone()
+
+
+def rename_chat(conn: sqlite3.Connection, chat_id: int, title: str) -> None:
+    conn.execute(
+        "UPDATE chats SET title = ?, updated_at = ? WHERE id = ?",
+        (title, _time.time(), chat_id),
+    )
+    conn.commit()
+
+
+def delete_chat(conn: sqlite3.Connection, chat_id: int) -> None:
+    # chat_messages cascade via FK (foreign_keys pragma is ON in connect()).
+    conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+    conn.commit()
+
+
+def add_message(
+    conn: sqlite3.Connection,
+    chat_id: int,
+    role: str,
+    content: str,
+    results: list[dict] | None = None,
+) -> int:
+    now = _time.time()
+    cur = conn.execute(
+        """INSERT INTO chat_messages(chat_id, role, content, results_json, created_at)
+           VALUES(?, ?, ?, ?, ?)""",
+        (chat_id, role, content, _json.dumps(results) if results else None, now),
+    )
+    conn.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (now, chat_id))
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_messages(conn: sqlite3.Connection, chat_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM chat_messages WHERE chat_id = ? ORDER BY id ASC", (chat_id,)
+    ).fetchall()
+
+
+def hydrate_results(conn: sqlite3.Connection, results_json: str | None) -> list[dict]:
+    """Turn stored [{"id","score"}] refs into full result dicts for display,
+    preserving order and silently dropping photos that no longer exist."""
+    if not results_json:
+        return []
+    refs = _json.loads(results_json)
+    out: list[dict] = []
+    for ref in refs:
+        row = conn.execute(
+            """SELECT id, path, thumb_path, w, h, taken_at, camera, lat, lon
+                 FROM images WHERE id = ?""",
+            (ref["id"],),
+        ).fetchone()
+        if row:
+            d = dict(row)
+            d["score"] = ref.get("score", 0.0)
+            out.append(d)
+    return out

@@ -95,6 +95,22 @@ export interface IndexProgress {
   error: string | null;
 }
 
+export interface Chat {
+  id: number;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  message_count?: number;
+}
+
+export interface ChatMessage {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  created_at: number;
+  results: SearchResult[];
+}
+
 export interface Settings {
   model_name: string;
   pretrained: string;
@@ -164,4 +180,19 @@ export const api = {
   getSettings: () => req<Settings>("/settings"),
   setSettings: (s: Partial<Settings>) =>
     req<Settings>("/settings", { method: "POST", body: JSON.stringify(s) }),
+
+  // ---------- chat ----------
+  listChats: () => req<Chat[]>("/chats"),
+  createChat: () => req<Chat>("/chats", { method: "POST" }),
+  getChat: (id: number) =>
+    req<{ chat: Chat; messages: ChatMessage[] }>(`/chats/${id}`),
+  renameChat: (id: number, title: string) =>
+    req<Chat>(`/chats/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
+  deleteChat: (id: number) =>
+    req<{ ok: boolean }>(`/chats/${id}`, { method: "DELETE" }),
+  sendMessage: (id: number, text: string) =>
+    req<{ user: ChatMessage; assistant: ChatMessage; title: string }>(
+      `/chats/${id}/messages`,
+      { method: "POST", body: JSON.stringify({ text }) }
+    ),
 };

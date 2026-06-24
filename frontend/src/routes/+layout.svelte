@@ -3,6 +3,7 @@
   import { page } from "$app/stores";
 
   const tabs = [
+    { href: "/chat/", label: "Chat" },
     { href: "/search/", label: "Search" },
     { href: "/library/", label: "Library" },
     { href: "/settings/", label: "Settings" },
