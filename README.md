@@ -215,7 +215,7 @@ python -m sidecar.prune --folder /mnt/photos
 Built step by step, each step a working app:
 
 - [x] **Step 1 — Base.** Fork PhotoCLIP into Lumen: CLIP search, Spotlight panel, library, settings, tray, sidecar. *(this commit)*
-- [ ] **Step 2 — Tier 2 CV engine.** `quality_metrics` table + a sharpness/exposure/subject-detection pass in the sidecar, cached in SQLite.
+- [x] **Step 2 — Tier 2 CV engine.** `quality_metrics` table + `sidecar/quality.py`: sharpness, exposure, and eye-validated subject-vs-background focus, cached in SQLite. CLI: `python -m sidecar.quality <folder>`.
 - [ ] **Step 3 — Instant quality filters.** UI chips: *blurry*, *dark*, *out-of-focus subject*, *eyes closed* — pure filters over cached metrics, no model calls.
 - [ ] **Step 4 — Model picker.** Local (Ollama/downloadable, quantization choice) + cloud (OpenRouter/Groq) with live cost estimates; hardware scan + auto-recommend (ported from `excel-ai-assistant`).
 - [ ] **Step 5 — Tier 3 VLM.** Per-image inspection tool, local or cloud per the picker.
