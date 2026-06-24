@@ -6,6 +6,25 @@ copied — Lumen just points at them where they already are.
 
 ## A. Fresh setup on any machine
 
+### 0. Toolchain (once per machine), Ubuntu 22.04 / 24.04
+
+```bash
+# build + GUI libs (24.04 and 22.04 both have webkit2gtk-4.1)
+sudo apt update && sudo apt install -y \
+  git build-essential curl wget file python3 python3-venv \
+  libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+  librsvg2-dev libxdo-dev libssl-dev
+
+# uv (fast Python env), Rust, Node+pnpm
+curl -LsSf https://astral.sh/uv/install.sh | sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
+sudo npm install -g pnpm
+# open a new shell so uv/cargo/pnpm are on PATH
+```
+
+### 1. Clone + build + run
+
 ```bash
 git clone https://github.com/kamenlevi/lumen
 cd lumen
@@ -13,9 +32,9 @@ cd lumen
 ./run.sh              # browser mode → http://127.0.0.1:5173/chat/
 ```
 
-`setup.sh` needs **Python ≥3.9** (3.11 ideal — 3.8 is too old), **Node + pnpm**,
-and ideally **uv**. It auto-installs the GPU build of torch if it sees an NVIDIA
-card, otherwise the smaller CPU build.
+`setup.sh` needs **Python ≥3.9** (3.8 is too old; 24.04 ships 3.12, fine),
+**Node + pnpm**, and ideally **uv**. It auto-installs the GPU build of torch if
+it sees an NVIDIA card, otherwise the smaller CPU build.
 
 ## B. The native desktop app (global Ctrl+Space, tray) — Ubuntu 22.04+ only
 
