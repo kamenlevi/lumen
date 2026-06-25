@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import { api, type PhotoDetail, type SearchResult } from "$lib/ipc";
@@ -20,6 +21,42 @@
   let down = { x: 0, y: 0, sl: 0, st: 0 };
   let similarTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Tier-3 VLM "describe this photo" — opt-in, cached, async (slow on CPU).
+  let vlmAvail = $state<boolean | null>(null);
+  let card = $state<{ status: string; description?: string; error?: string }>({ status: "none" });
+  let cardPoll: ReturnType<typeof setInterval> | null = null;
+
+  function clearPoll() {
+    if (cardPoll) { clearInterval(cardPoll); cardPoll = null; }
+  }
+  function startPoll(id: number) {
+    clearPoll();
+    cardPoll = setInterval(async () => {
+      const c = await api.photoCard(id);
+      card = c;
+      if (c.status === "done" || c.status === "error") clearPoll();
+    }, 3000);
+  }
+  async function loadCard(id: number) {
+    clearPoll();
+    if (vlmAvail === null) {
+      try { vlmAvail = (await api.vlmStatus()).available; } catch { vlmAvail = false; }
+    }
+    try {
+      card = await api.photoCard(id); // shows a cached description instantly
+      if (card.status === "generating") startPoll(id);
+    } catch { card = { status: "none" }; }
+  }
+  async function describe(force = false) {
+    if (!photo) return;
+    try {
+      card = await api.photoDescribe(photo.id, force);
+      if (card.status === "generating") startPoll(photo.id);
+    } catch (e) {
+      card = { status: "error", error: (e as Error).message };
+    }
+  }
+
   function preload(id: number | null) {
     if (id != null) {
       const im = new Image();
@@ -33,6 +70,8 @@
     photo = null;
     mode = "fit";
     loaded = false;
+    card = { status: "none" };
+    loadCard(id);
     api.photo(id).then((p) => (photo = p)).catch((e) => (err = e.message));
     api.photoNeighbors(id).then((n) => {
       nav = n;
@@ -99,6 +138,8 @@
     if (lat == null || lon == null) return "—";
     return `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   }
+
+  onDestroy(clearPoll);
 </script>
 
 <svelte:window on:keydown={onKey} />
@@ -165,6 +206,35 @@
             <dt class="text-xs uppercase tracking-wide text-neutral-500">GPS</dt>
             <dd class="font-mono text-xs">{fmtCoord(photo.lat, photo.lon)}</dd>
           </div>
+        </div>
+
+        <!-- AI description (Tier-3 VLM) — opt-in, cached -->
+        <div class="mt-2 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+          <div class="mb-1 flex items-center justify-between">
+            <span class="text-xs font-semibold uppercase tracking-wide text-indigo-300">AI description</span>
+            {#if card.status === "done"}
+              <button class="text-[11px] text-neutral-500 hover:text-neutral-300" onclick={() => describe(true)}>re-analyze</button>
+            {/if}
+          </div>
+          {#if vlmAvail === false}
+            <p class="text-xs text-neutral-500">No vision model selected. Pick one in the <a href="/models/" class="text-indigo-400 underline">Models</a> tab to enable this.</p>
+          {:else if card.status === "done"}
+            <p class="text-sm text-neutral-200">{card.description}</p>
+          {:else if card.status === "generating"}
+            <p class="flex items-center gap-2 text-sm text-neutral-400">
+              <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500"></span>
+              Analyzing… (local model can take a minute or two on CPU)
+            </p>
+          {:else if card.status === "error"}
+            <p class="text-xs text-red-400">{card.error}</p>
+            <button class="mt-1 text-xs text-indigo-400 underline" onclick={() => describe()}>try again</button>
+          {:else}
+            <button
+              class="rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+              onclick={() => describe()}>
+              ✨ Describe this photo
+            </button>
+          {/if}
         </div>
       </dl>
     </div>

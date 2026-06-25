@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from . import chat as chat_brain
 from . import clip_model, db
 from . import models as model_mgr
+from . import vlm
 from .index import IndexProgress, index_folder
 from .paths import app_data_dir, db_path, port_file
 from .prune import prune_all, prune_folder
@@ -102,6 +103,14 @@ class ModelPullIn(BaseModel):
 class ModelSelectIn(BaseModel):
     provider: str
     model: str
+
+
+class ApiKeyIn(BaseModel):
+    key: str
+
+
+class DescribeIn(BaseModel):
+    force: bool = False
 
 
 # ---------- endpoints ----------
@@ -413,6 +422,47 @@ def models_select(body: ModelSelectIn) -> dict[str, Any]:
     conn = db.connect()
     model_mgr.set_selection(conn, body.provider, body.model)
     return model_mgr.get_selection(conn)
+
+
+# ---------- vlm (tier-3) ----------
+
+@app.get("/vlm/status")
+def vlm_status() -> dict[str, Any]:
+    conn = db.connect()
+    provider, model = vlm.selected_model(conn)
+    return {
+        "available": vlm.available(conn),
+        "provider": provider,
+        "model": model,
+        "cards": db.count_vlm_cards(conn),
+        "has_key": bool(db.get_setting(conn, "openrouter_api_key", "")),
+    }
+
+
+@app.post("/vlm/key")
+def vlm_set_key(body: ApiKeyIn) -> dict[str, Any]:
+    conn = db.connect()
+    db.set_setting(conn, "openrouter_api_key", body.key.strip())
+    return {"ok": True, "has_key": bool(body.key.strip())}
+
+
+@app.post("/photo/{photo_id}/describe")
+def photo_describe(photo_id: int, body: DescribeIn) -> dict[str, Any]:
+    conn = db.connect()
+    if not vlm.available(conn):
+        raise HTTPException(
+            status_code=400,
+            detail="No vision model available. Pick one in the Models tab (and add an API key for cloud).",
+        )
+    if not conn.execute("SELECT 1 FROM images WHERE id = ?", (photo_id,)).fetchone():
+        raise HTTPException(status_code=404, detail="Not found")
+    return vlm.request_card(conn, photo_id, force=body.force)
+
+
+@app.get("/photo/{photo_id}/card")
+def photo_card(photo_id: int) -> dict[str, Any]:
+    conn = db.connect()
+    return vlm.card_status(conn, photo_id)
 
 
 # ---------- chat ----------

@@ -101,6 +101,15 @@ CREATE TABLE IF NOT EXISTS color_metrics (
     dominant_hex TEXT,    -- representative color, for a swatch in the UI
     analyzed_at REAL NOT NULL
 );
+
+-- Tier-3 VLM cards: a vision-model description per image, computed ONCE
+-- (lazily, on view / idle) and cached forever so the model never re-looks.
+CREATE TABLE IF NOT EXISTS vlm_cards (
+    image_id INTEGER PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
+    description TEXT,
+    model TEXT,
+    analyzed_at REAL NOT NULL
+);
 """
 
 
@@ -177,6 +186,29 @@ def get_quality(conn: sqlite3.Connection, image_id: int) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM quality_metrics WHERE image_id = ?", (image_id,)
     ).fetchone()
+
+
+def get_vlm_card(conn: sqlite3.Connection, image_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM vlm_cards WHERE image_id = ?", (image_id,)
+    ).fetchone()
+
+
+def upsert_vlm_card(conn: sqlite3.Connection, image_id: int, description: str, model: str) -> None:
+    import time as _t
+    conn.execute(
+        """INSERT INTO vlm_cards(image_id, description, model, analyzed_at)
+           VALUES(?,?,?,?)
+           ON CONFLICT(image_id) DO UPDATE SET
+             description=excluded.description, model=excluded.model,
+             analyzed_at=excluded.analyzed_at""",
+        (image_id, description, model, _t.time()),
+    )
+    conn.commit()
+
+
+def count_vlm_cards(conn: sqlite3.Connection) -> int:
+    return conn.execute("SELECT COUNT(*) AS n FROM vlm_cards").fetchone()["n"]
 
 
 def upsert_color(conn: sqlite3.Connection, image_id: int, m: dict) -> None:

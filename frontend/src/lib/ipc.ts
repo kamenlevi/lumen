@@ -266,6 +266,21 @@ export const api = {
       body: JSON.stringify({ provider, model }),
     }),
 
+  // ---------- vlm (tier-3) ----------
+  vlmStatus: () =>
+    req<{ available: boolean; provider: string; model: string; cards: number; has_key: boolean }>(
+      "/vlm/status"
+    ),
+  vlmSetKey: (key: string) =>
+    req<{ ok: boolean; has_key: boolean }>("/vlm/key", { method: "POST", body: JSON.stringify({ key }) }),
+  photoDescribe: (id: number, force = false) =>
+    req<{ status: string; description?: string; model?: string; error?: string }>(
+      `/photo/${id}/describe`,
+      { method: "POST", body: JSON.stringify({ force }) }
+    ),
+  photoCard: (id: number) =>
+    req<{ status: string; description?: string; model?: string; error?: string }>(`/photo/${id}/card`),
+
   // ---------- chat ----------
   listChats: () => req<Chat[]>("/chats"),
   createChat: () => req<Chat>("/chats", { method: "POST" }),
