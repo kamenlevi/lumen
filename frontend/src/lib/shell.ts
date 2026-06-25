@@ -4,6 +4,11 @@ import { writable } from "svelte/store";
 
 export const mode = writable<"compact" | "expanded">("compact");
 export const spotlightQuery = writable<string>("");
+// Bumped to ask the active tab's input to focus (tab switch / Ctrl+Space).
+export const focusTick = writable<number>(0);
+export function requestFocus() {
+  focusTick.update((n) => n + 1);
+}
 
 export async function applyMode(m: "compact" | "expanded") {
   mode.set(m);

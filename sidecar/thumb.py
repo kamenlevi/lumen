@@ -24,9 +24,10 @@ try:
 except ImportError:
     rawpy = None
 
-from .paths import thumb_dir
+from .paths import preview_dir, thumb_dir
 
 THUMB_SIZE = 256
+PREVIEW_SIZE = 1600
 JPEG_QUALITY = 85
 
 RAW_EXTS = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".rw2", ".orf", ".raf"}
@@ -100,4 +101,24 @@ def make_thumb(image_path: Path, img: Image.Image | None = None) -> Path:
     thumb = img.copy()
     thumb.thumbnail((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
     thumb.save(out, "JPEG", quality=JPEG_QUALITY, optimize=True)
+    return out
+
+
+def preview_path_for(image_path: Path) -> Path:
+    h = hashlib.sha1(str(image_path.resolve()).encode("utf-8")).hexdigest()
+    return preview_dir() / h[:2] / f"{h}.jpg"
+
+
+def make_preview(image_path: Path, img: Image.Image | None = None) -> Path:
+    """Generate a ~1600px JPEG for fast on-screen viewing (a 20MP original is
+    wasteful to decode for a 1080p screen). Lazily built on first view, cached."""
+    out = preview_path_for(image_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if out.exists():
+        return out
+    if img is None:
+        img = load_image(image_path)
+    p = img.copy()
+    p.thumbnail((PREVIEW_SIZE, PREVIEW_SIZE), Image.LANCZOS)
+    p.save(out, "JPEG", quality=88, optimize=True)
     return out

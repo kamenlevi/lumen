@@ -37,6 +37,12 @@ def thumb_dir() -> Path:
     return p
 
 
+def preview_dir() -> Path:
+    p = app_data_dir() / "previews"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def model_cache_dir() -> Path:
     p = app_data_dir() / "models"
     p.mkdir(parents=True, exist_ok=True)

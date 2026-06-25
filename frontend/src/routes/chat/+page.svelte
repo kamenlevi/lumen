@@ -1,7 +1,19 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, onMount } from "svelte";
   import { api, type Chat, type ChatMessage, type SearchResult } from "$lib/ipc";
   import ResultGrid from "$lib/components/ResultGrid.svelte";
+  import { focusTick } from "$lib/shell";
+
+  let inputEl: HTMLTextAreaElement | null = $state(null);
+  function focusInput() {
+    inputEl?.focus();
+  }
+  onMount(focusInput);
+  // Refocus when a tab switch / Ctrl+Space asks for it.
+  $effect(() => {
+    $focusTick;
+    setTimeout(focusInput, 30);
+  });
 
   let chats = $state<Chat[]>([]);
   let activeId = $state<number | null>(null);
@@ -211,6 +223,7 @@
       class="flex items-end gap-2 border-t border-neutral-800 bg-neutral-900 p-3"
       on:submit|preventDefault={send}>
       <textarea
+        bind:this={inputEl}
         bind:value={input}
         on:keydown={onKey}
         rows="1"

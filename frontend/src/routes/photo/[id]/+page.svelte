@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { tick } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import { api, type PhotoDetail, type SearchResult } from "$lib/ipc";
@@ -8,22 +7,23 @@
   let photo = $state<PhotoDetail | null>(null);
   let similar = $state<SearchResult[]>([]);
   let err = $state<string | null>(null);
-  let nav = $state<{ prev: number | null; next: number | null; index: number | null; total: number }>(
-    { prev: null, next: null, index: null, total: 0 }
+  let nav = $state<{ prev: number | null; next: number | null; prev2: number | null; next2: number | null; index: number | null; total: number }>(
+    { prev: null, next: null, prev2: null, next2: null, index: null, total: 0 }
   );
 
-  // ojo-style zoom: just two states — fit-to-window and 100% (actual pixels).
-  // No laggy continuous scaling. Pan by dragging when at 100%.
+  // ojo-style zoom: fit-to-window ⇄ 100% (of the preview). Pan by dragging.
   let mode = $state<"fit" | "actual">("fit");
   let container: HTMLDivElement | null = $state(null);
   let loaded = $state(false);
   let dragging = false;
-  let drag = { x: 0, y: 0, sl: 0, st: 0 };
+  let moved = false;
+  let down = { x: 0, y: 0, sl: 0, st: 0 };
+  let similarTimer: ReturnType<typeof setTimeout> | null = null;
 
   function preload(id: number | null) {
     if (id != null) {
       const im = new Image();
-      im.src = api.photoFileUrl(id);
+      im.src = api.photoPreviewUrl(id); // small + cached → instant arrow nav
     }
   }
 
@@ -31,57 +31,61 @@
     const id = Number($page.params.id);
     if (!id) return;
     photo = null;
-    similar = [];
     mode = "fit";
     loaded = false;
     api.photo(id).then((p) => (photo = p)).catch((e) => (err = e.message));
-    api.photoSimilar(id, 24).then((r) => (similar = r.results)).catch(() => {});
     api.photoNeighbors(id).then((n) => {
       nav = n;
-      preload(n.prev); // neighbours preloaded → arrow nav is instant
-      preload(n.next);
+      preload(n.prev); preload(n.next); preload(n.prev2); preload(n.next2);
     }).catch(() => {});
+    // The "similar" search is a CLIP query — defer it so rapid arrowing
+    // doesn't fire one per image. Only runs if you linger ~0.4s.
+    if (similarTimer) clearTimeout(similarTimer);
+    similar = [];
+    similarTimer = setTimeout(() => {
+      api.photoSimilar(id, 24).then((r) => (similar = r.results)).catch(() => {});
+    }, 400);
   });
 
   function go(id: number | null) {
     if (id != null) goto(`/photo/${id}/`);
   }
 
-  async function toggleZoom(e: MouseEvent) {
-    if (dragging) return;
+  function toggleZoom(e: { clientX: number; clientY: number }) {
     if (mode === "fit") {
       mode = "actual";
-      await tick();
-      if (container) {
-        // center the 100% view on where the user clicked
-        const img = container.querySelector("img.full") as HTMLImageElement | null;
-        if (img) {
-          const r = container.getBoundingClientRect();
-          const fx = (e.clientX - r.left) / r.width;
-          const fy = (e.clientY - r.top) / r.height;
-          container.scrollLeft = fx * (img.scrollWidth - r.width);
-          container.scrollTop = fy * (img.scrollHeight - r.height);
-        }
-      }
+      queueMicrotask(() => {
+        if (!container) return;
+        const r = container.getBoundingClientRect();
+        const inner = container.scrollWidth, innerH = container.scrollHeight;
+        const fx = (e.clientX - r.left) / r.width;
+        const fy = (e.clientY - r.top) / r.height;
+        container.scrollLeft = fx * (inner - r.width);
+        container.scrollTop = fy * (innerH - r.height);
+      });
     } else {
       mode = "fit";
     }
   }
 
   function onPointerDown(e: PointerEvent) {
-    if (mode !== "actual" || !container) return;
-    dragging = true;
-    drag = { x: e.clientX, y: e.clientY, sl: container.scrollLeft, st: container.scrollTop };
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    moved = false;
+    down = { x: e.clientX, y: e.clientY, sl: container?.scrollLeft ?? 0, st: container?.scrollTop ?? 0 };
+    if (mode === "actual") {
+      dragging = true;
+      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    }
   }
   function onPointerMove(e: PointerEvent) {
-    if (!dragging || !container) return;
-    container.scrollLeft = drag.sl - (e.clientX - drag.x);
-    container.scrollTop = drag.st - (e.clientY - drag.y);
+    if (Math.abs(e.clientX - down.x) > 4 || Math.abs(e.clientY - down.y) > 4) moved = true;
+    if (dragging && container) {
+      container.scrollLeft = down.sl - (e.clientX - down.x);
+      container.scrollTop = down.st - (e.clientY - down.y);
+    }
   }
-  function onPointerUp() {
-    // small delay so the click that ends a drag doesn't also toggle zoom
-    setTimeout(() => (dragging = false), 0);
+  function onPointerUp(e: PointerEvent) {
+    dragging = false;
+    if (!moved) toggleZoom(e); // a click (not a drag) toggles zoom
   }
 
   function onKey(e: KeyboardEvent) {
@@ -110,17 +114,15 @@
         bind:this={container}
         class="relative h-[72vh] rounded-md bg-black ring-1 ring-neutral-800 {mode === 'actual' ? 'overflow-auto' : 'overflow-hidden flex items-center justify-center'}"
         role="presentation"
-        onclick={toggleZoom}
         onpointerdown={onPointerDown}
         onpointermove={onPointerMove}
         onpointerup={onPointerUp}>
-        <!-- instant thumbnail placeholder under the full image -->
         <img
           src={api.photoThumbUrl(photo.id)}
           alt=""
-          class="pointer-events-none absolute inset-0 m-auto max-h-full max-w-full object-contain blur-[1px] transition-opacity {loaded ? 'opacity-0' : 'opacity-100'}" />
+          class="pointer-events-none absolute inset-0 m-auto max-h-full max-w-full object-contain blur-[1px] {loaded ? 'opacity-0' : 'opacity-100'}" />
         <img
-          src={api.photoFileUrl(photo.id)}
+          src={api.photoPreviewUrl(photo.id)}
           alt={photo.path}
           draggable="false"
           onload={() => (loaded = true)}
@@ -129,15 +131,15 @@
             : (dragging ? 'cursor-grabbing' : 'cursor-grab') + ' max-w-none'} {loaded ? 'opacity-100' : 'opacity-0'}" />
 
         {#if nav.prev != null}
-          <button onclick={(e) => { e.stopPropagation(); go(nav.prev); }} aria-label="Previous"
+          <button onpointerdown={(e) => e.stopPropagation()} onclick={() => go(nav.prev)} aria-label="Previous"
             class="absolute left-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/55 px-3 py-2 text-lg text-white hover:bg-black/80">‹</button>
         {/if}
         {#if nav.next != null}
-          <button onclick={(e) => { e.stopPropagation(); go(nav.next); }} aria-label="Next"
+          <button onpointerdown={(e) => e.stopPropagation()} onclick={() => go(nav.next)} aria-label="Next"
             class="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/55 px-3 py-2 text-lg text-white hover:bg-black/80">›</button>
         {/if}
         <div class="pointer-events-none absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded bg-black/60 px-2 py-0.5 text-[11px] text-neutral-300">
-          {#if nav.index}{nav.index} / {nav.total} · {/if}{mode === "fit" ? "fit — click to zoom" : "100% — click to fit"}
+          {#if nav.index}{nav.index} / {nav.total} · {/if}{mode === "fit" ? "fit — click to zoom · ← →" : "100% — click to fit"}
         </div>
       </div>
 

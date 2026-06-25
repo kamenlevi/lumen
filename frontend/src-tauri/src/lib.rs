@@ -85,7 +85,7 @@ fn position_window(win: &WebviewWindow, w_logical: f64, h_logical: f64) {
         let win_w = w_logical * scale;
         let win_h = h_logical * scale;
         let center_x = (msize.width as f64 - win_w) / 2.0;
-        let offset = msize.width as f64 * 0.08; // "a bit" to the right
+        let offset = msize.width as f64 * 0.18; // noticeably to the right
         let x = (center_x + offset).min(msize.width as f64 - win_w).max(0.0);
         let y = ((msize.height as f64 - win_h) / 2.0).max(0.0);
         let _ = win.set_position(tauri::PhysicalPosition::new(
@@ -319,13 +319,17 @@ fn show_expanded(app: &AppHandle) {
     }
 }
 
-/// Ctrl+Space: hide if it's up and focused, otherwise pop the compact bar.
-fn toggle_window(app: &AppHandle) {
+/// Ctrl+Space always opens *something*:
+///  - app focused/in front  → jump to the Chat tab, ready to type
+///  - hidden or behind another app → the compact spotlight search
+fn handle_hotkey(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let visible = win.is_visible().unwrap_or(false);
         let focused = win.is_focused().unwrap_or(false);
         if visible && focused {
-            let _ = win.hide();
+            let _ = win.emit("ui://chat", ());
+            let _ = win.show();
+            let _ = win.set_focus();
         } else {
             show_compact(app);
         }
@@ -422,7 +426,7 @@ pub fn run() {
         // again; this catches that second launch and toggles the spotlight
         // instead of opening a duplicate window.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            toggle_window(app);
+            handle_hotkey(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -430,7 +434,7 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, sc, event| {
                     if event.state() == ShortcutState::Pressed && sc == &trigger {
-                        toggle_window(app);
+                        handle_hotkey(app);
                     }
                 })
                 .build(),

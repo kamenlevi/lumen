@@ -239,12 +239,15 @@ export const api = {
 
   photo: (id: number) => req<PhotoDetail>(`/photo/${id}`),
   photoNeighbors: (id: number) =>
-    req<{ prev: number | null; next: number | null; index: number | null; total: number }>(
-      `/photo/${id}/neighbors`
-    ),
+    req<{
+      prev: number | null; next: number | null;
+      prev2: number | null; next2: number | null;
+      index: number | null; total: number;
+    }>(`/photo/${id}/neighbors`),
   photoSimilar: (id: number, k = 20) =>
     req<{ results: SearchResult[] }>(`/photo/${id}/similar?k=${k}`),
   photoThumbUrl: (id: number) => `${sidecarBase()}/photo/${id}/thumb`,
+  photoPreviewUrl: (id: number) => `${sidecarBase()}/photo/${id}/preview`,
   photoFileUrl: (id: number) => `${sidecarBase()}/photo/${id}/file`,
 
   getSettings: () => req<Settings>("/settings"),

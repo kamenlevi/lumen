@@ -277,12 +277,30 @@ def photo_neighbors(photo_id: int) -> dict[str, Any]:
         i = ids.index(photo_id)
     except ValueError:
         return {"prev": None, "next": None, "index": None, "total": len(ids)}
+    at = lambda j: ids[j] if 0 <= j < len(ids) else None
     return {
-        "prev": ids[i - 1] if i > 0 else None,
-        "next": ids[i + 1] if i < len(ids) - 1 else None,
-        "index": i + 1,
-        "total": len(ids),
+        "prev": at(i - 1), "next": at(i + 1),
+        "prev2": at(i - 2), "next2": at(i + 2),
+        "index": i + 1, "total": len(ids),
     }
+
+
+@app.get("/photo/{photo_id}/preview")
+def photo_preview(photo_id: int):
+    """A ~1600px JPEG for fast viewing — built on first request and cached."""
+    conn = db.connect()
+    row = conn.execute("SELECT path FROM images WHERE id = ?", (photo_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    from .thumb import make_preview
+    try:
+        p = make_preview(Path(row["path"]))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"preview failed: {e}")
+    return FileResponse(
+        p, media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/photo/{photo_id}/similar")

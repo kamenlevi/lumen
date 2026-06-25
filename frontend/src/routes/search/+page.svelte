@@ -1,9 +1,17 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { api, type SearchResult } from "$lib/ipc";
   import ResultGrid from "$lib/components/ResultGrid.svelte";
-  import { spotlightQuery } from "$lib/shell";
+  import { spotlightQuery, focusTick } from "$lib/shell";
 
   let query = $state("");
+  let inputEl: HTMLInputElement | null = $state(null);
+  function focusInput() { inputEl?.focus(); }
+  onMount(focusInput);
+  $effect(() => {
+    $focusTick;
+    setTimeout(focusInput, 30);
+  });
 
   // When the compact bar submits a query, run it here (works even if we're
   // already on /search). Clearing the store afterwards avoids re-running.
@@ -55,6 +63,7 @@
   <form class="flex flex-wrap items-center gap-2 border-b border-neutral-800 bg-neutral-900 p-3" on:submit|preventDefault={run}>
     <input
       type="text"
+      bind:this={inputEl}
       bind:value={query}
       placeholder='try: "sunset over water", "screenshot of code", "person playing guitar"'
       class="min-w-[24rem] flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm placeholder:text-neutral-600 focus:border-neutral-500 focus:outline-none" />

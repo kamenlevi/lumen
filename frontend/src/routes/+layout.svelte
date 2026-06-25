@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
-  import { mode, applyMode, hideWindow, minimizeWindow } from "$lib/shell";
+  import { mode, applyMode, hideWindow, minimizeWindow, requestFocus } from "$lib/shell";
   import CompactBar from "$lib/components/CompactBar.svelte";
 
   let { children } = $props();
@@ -22,6 +22,7 @@
       const { listen } = await import("@tauri-apps/api/event");
       await listen("ui://spotlight", () => applyMode("compact"));
       await listen("ui://expand", () => applyMode("expanded"));
+      await listen("ui://chat", () => { applyMode("expanded"); goto("/chat/"); requestFocus(); });
       await listen("navigate", (e) => { applyMode("expanded"); goto(String(e.payload)); });
     } catch { /* not in Tauri */ }
   });
@@ -45,6 +46,7 @@
           {@const active = $page.url.pathname.startsWith(tab.href)}
           <a
             href={tab.href}
+            onclick={requestFocus}
             class="rounded px-3 py-1 transition-colors {active
               ? 'bg-neutral-800 text-white'
               : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100'}">
