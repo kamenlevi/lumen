@@ -233,6 +233,29 @@ def search_by_color(
     return [_row_to_result(r, round(s, 4)) for s, r in scored[:max(1, min(top_k, 500))]]
 
 
+def search_descriptions(query: str, *, top_k: int = 50) -> list[SearchResult]:
+    """Keyword search over the VLM-generated descriptions (vlm_cards). Lets the
+    chat find photos by content the model saw — text on a sign, a specific
+    object — that CLIP may miss. Only covers photos that have been described."""
+    q = query.strip()
+    if not q:
+        return []
+    conn = db.connect()
+    rows = conn.execute(f"""
+        SELECT images.id, images.path, images.thumb_path, images.w, images.h,
+               images.taken_at, images.camera, images.lat, images.lon,
+               qm.sharpness, qm.is_blurry, qm.is_dark, qm.is_bright,
+               qm.subject_out_of_focus, cm.dominant_hex
+          FROM vlm_cards v
+          JOIN images ON images.id = v.image_id
+     LEFT JOIN quality_metrics qm ON qm.image_id = images.id
+     LEFT JOIN color_metrics cm ON cm.image_id = images.id
+         WHERE v.description LIKE ? COLLATE NOCASE
+         LIMIT ?
+    """, (f"%{q}%", max(1, min(int(top_k), 500)))).fetchall()
+    return [_row_to_result(r, 1.0) for r in rows]
+
+
 def search_by_quality(
     flag: str,
     *,

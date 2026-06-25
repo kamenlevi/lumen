@@ -19,6 +19,7 @@ from .search import (
     SearchResult,
     search_by_color,
     search_by_quality,
+    search_descriptions,
     search_text,
 )
 
@@ -108,15 +109,25 @@ def respond(
     if color:
         return _answer_color(conn, query, color)
 
-    # Plain semantic search.
-    results = search_text(query, top_k=DEFAULT_RESULT_K)
-    if not results:
+    # Plain search: CLIP (semantic) + any photos whose AI description matches
+    # (exact content the vision model saw). Description hits first, then CLIP.
+    clip = search_text(query, top_k=DEFAULT_RESULT_K)
+    desc = search_descriptions(query, top_k=DEFAULT_RESULT_K)
+    seen: set[int] = set()
+    merged: list[SearchResult] = []
+    for r in desc + clip:
+        if r.id not in seen:
+            seen.add(r.id)
+            merged.append(r)
+    merged = merged[:DEFAULT_RESULT_K]
+    if not merged:
         return (
             f"I couldn’t find anything matching “{query}”. Make sure the folder "
             "is indexed in the Library tab, or try describing it differently.",
             [],
         )
-    return (f"Here are {len(results)} photos matching “{query}”.", _refs(results))
+    note = f" — {len(desc)} matched an AI description" if desc else ""
+    return (f"Here are {len(merged)} photos matching “{query}”{note}.", _refs(merged))
 
 
 def _answer_color(

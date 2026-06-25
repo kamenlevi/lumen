@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { api, type ModelsOverview, type CloudModel, type PullStatus } from "$lib/ipc";
+  import { api, type ModelsOverview, type CloudModel, type PullStatus, type BulkStatus } from "$lib/ipc";
 
   let ov = $state<ModelsOverview | null>(null);
   let cloud = $state<CloudModel[]>([]);
@@ -10,6 +10,39 @@
   let pull = $state<PullStatus | null>(null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let err = $state<string | null>(null);
+  let apiKey = $state("");
+  let hasKey = $state(false);
+  let keySaved = $state(false);
+
+  let bulk = $state<BulkStatus | null>(null);
+  let bulkTimer: ReturnType<typeof setInterval> | null = null;
+
+  function pollBulk() {
+    if (bulkTimer) return;
+    bulkTimer = setInterval(async () => {
+      bulk = await api.vlmDescribeAllStatus();
+      if (!bulk.running && bulkTimer) { clearInterval(bulkTimer); bulkTimer = null; }
+    }, 1500);
+  }
+  async function describeAll() {
+    try { bulk = await api.vlmDescribeAll(); pollBulk(); }
+    catch (e) { err = (e as Error).message; }
+  }
+  async function stopDescribeAll() {
+    try { bulk = await api.vlmDescribeAllStop(); } catch { /* ignore */ }
+  }
+
+  async function saveKey() {
+    try {
+      const r = await api.vlmSetKey(apiKey.trim());
+      hasKey = r.has_key;
+      keySaved = true;
+      apiKey = "";
+      setTimeout(() => (keySaved = false), 2000);
+    } catch (e) {
+      err = (e as Error).message;
+    }
+  }
 
   async function load() {
     try {
@@ -87,6 +120,8 @@
 
   onMount(async () => {
     await load();
+    try { hasKey = (await api.vlmStatus()).has_key; } catch { /* ignore */ }
+    try { bulk = await api.vlmDescribeAllStatus(); if (bulk.running) pollBulk(); } catch { /* ignore */ }
     // A download started on a previous visit keeps running in the sidecar —
     // pick its progress back up instead of looking like it was lost.
     const ps = await api.modelPullStatus();
@@ -95,7 +130,10 @@
       startPolling();
     }
   });
-  onDestroy(() => { if (pollTimer) clearInterval(pollTimer); });
+  onDestroy(() => {
+    if (pollTimer) clearInterval(pollTimer);
+    if (bulkTimer) clearInterval(bulkTimer);
+  });
 </script>
 
 <section class="mx-auto max-w-4xl space-y-6 p-5">
@@ -130,6 +168,32 @@
     <div class="rounded-lg border border-indigo-900/50 bg-indigo-950/30 px-4 py-3 text-sm">
       <div class="font-medium text-indigo-200">Recommended: {ov.recommendation.model}</div>
       <div class="mt-0.5 text-neutral-300">{ov.recommendation.why}</div>
+    </div>
+
+    <!-- describe whole library (so chat/search can use AI descriptions) -->
+    <div class="rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 text-sm">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="font-medium text-neutral-200">Describe your library with AI</div>
+          <div class="text-xs text-neutral-500">Runs the vision model over every photo in the background and caches a description, so chat &amp; search can find photos by what's in them. Slow on CPU — fast with a cloud model.</div>
+        </div>
+        {#if bulk?.running}
+          <button class="rounded bg-neutral-800 px-3 py-1.5 text-xs text-neutral-200 hover:bg-neutral-700" onclick={stopDescribeAll}>Stop</button>
+        {:else}
+          <button class="rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50" disabled={!ov.selected.model} onclick={describeAll}>Describe all</button>
+        {/if}
+      </div>
+      {#if bulk && (bulk.running || bulk.done > 0)}
+        <div class="mt-2">
+          <div class="h-1.5 w-full overflow-hidden rounded bg-neutral-800">
+            <div class="h-full bg-indigo-500 transition-[width]" style="width: {bulk.total ? Math.round((100 * bulk.done) / bulk.total) : 0}%"></div>
+          </div>
+          <div class="mt-1 text-[11px] text-neutral-500">
+            {bulk.done}/{bulk.total} described{bulk.failed ? ` · ${bulk.failed} failed` : ""}{bulk.running ? " · running…" : " · done"}
+          </div>
+        </div>
+      {/if}
+      {#if bulk?.error}<p class="mt-1 text-[11px] text-red-400">{bulk.error}</p>{/if}
     </div>
 
     <!-- on-device -->
@@ -193,6 +257,24 @@
             {cloudLoading ? "Loading…" : "Browse cloud models"}
           </button>
         {/if}
+      </div>
+
+      <!-- API key (required to actually use a cloud model) -->
+      <div class="flex flex-wrap items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2">
+        <span class="text-xs text-neutral-400">OpenRouter API key</span>
+        {#if hasKey}<span class="text-[11px] text-emerald-400">✓ saved</span>{/if}
+        <input
+          type="password"
+          bind:value={apiKey}
+          placeholder={hasKey ? "•••••••• (saved — paste to replace)" : "sk-or-v1-…"}
+          class="min-w-[14rem] flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm placeholder:text-neutral-600" />
+        <button
+          class="rounded bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+          disabled={!apiKey.trim()}
+          onclick={saveKey}>
+          {keySaved ? "Saved ✓" : "Save key"}
+        </button>
+        <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" class="text-[11px] text-indigo-400 underline">get a key</a>
       </div>
       {#if cloudLoaded}
         <input

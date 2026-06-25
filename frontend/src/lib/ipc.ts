@@ -177,6 +177,15 @@ export interface PullStatus {
   error: string | null;
 }
 
+export interface BulkStatus {
+  running: boolean;
+  done: number;
+  total: number;
+  failed: number;
+  current: number | null;
+  error: string | null;
+}
+
 export interface Settings {
   model_name: string;
   pretrained: string;
@@ -280,6 +289,9 @@ export const api = {
     ),
   photoCard: (id: number) =>
     req<{ status: string; description?: string; model?: string; error?: string }>(`/photo/${id}/card`),
+  vlmDescribeAll: () => req<BulkStatus>("/vlm/describe-all", { method: "POST" }),
+  vlmDescribeAllStop: () => req<BulkStatus>("/vlm/describe-all/stop", { method: "POST" }),
+  vlmDescribeAllStatus: () => req<BulkStatus>("/vlm/describe-all/status"),
 
   // ---------- chat ----------
   listChats: () => req<Chat[]>("/chats"),

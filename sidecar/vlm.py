@@ -128,21 +128,83 @@ def request_card(conn, image_id: int, force: bool = False) -> dict:
     return {"status": "generating"}
 
 
+def _describe_and_cache(conn, image_id: int) -> str:
+    """Synchronously describe one image and cache it. Returns the description."""
+    row = conn.execute(
+        "SELECT path, thumb_path FROM images WHERE id = ?", (image_id,)
+    ).fetchone()
+    if not row:
+        raise RuntimeError("image not found")
+    _, model = selected_model(conn)
+    # The thumbnail is plenty for a description and keeps the model fast.
+    img = row["thumb_path"] or row["path"]
+    desc = describe(conn, img)
+    db.upsert_vlm_card(conn, image_id, desc, model)
+    return desc
+
+
 def _generate(image_id: int) -> None:
     try:
         conn = db.connect()
-        row = conn.execute(
-            "SELECT path, thumb_path FROM images WHERE id = ?", (image_id,)
-        ).fetchone()
-        if not row:
-            raise RuntimeError("image not found")
-        _, model = selected_model(conn)
-        # The thumbnail is plenty for a description and keeps the model fast.
-        img = row["thumb_path"] or row["path"]
-        desc = describe(conn, img)
-        db.upsert_vlm_card(conn, image_id, desc, model)
+        desc = _describe_and_cache(conn, image_id)
         with _lock:
-            _jobs[image_id] = {"status": "done", "description": desc, "model": model}
+            _jobs[image_id] = {"status": "done", "description": desc}
     except Exception as e:
         with _lock:
             _jobs[image_id] = {"status": "error", "error": str(e)}
+
+
+# ---- bulk background "describe the library" daemon (with progress) ----
+_bulk = {"running": False, "done": 0, "total": 0, "failed": 0, "current": None, "error": None}
+_bulk_lock = threading.Lock()
+
+
+def bulk_status() -> dict:
+    with _bulk_lock:
+        return dict(_bulk)
+
+
+def bulk_stop() -> None:
+    with _bulk_lock:
+        _bulk["running"] = False
+
+
+def bulk_start() -> None:
+    with _bulk_lock:
+        if _bulk["running"]:
+            return
+        _bulk.update(running=True, done=0, total=0, failed=0, current=None, error=None)
+    threading.Thread(target=_bulk_worker, daemon=True).start()
+
+
+def _bulk_worker() -> None:
+    try:
+        conn = db.connect()
+        if not available(conn):
+            with _bulk_lock:
+                _bulk.update(running=False, error="No vision model available.")
+            return
+        rows = conn.execute(
+            """SELECT i.id FROM images i
+               LEFT JOIN vlm_cards v ON v.image_id = i.id
+               WHERE v.image_id IS NULL ORDER BY i.id"""
+        ).fetchall()
+        with _bulk_lock:
+            _bulk["total"] = len(rows)
+        for r in rows:
+            with _bulk_lock:
+                if not _bulk["running"]:
+                    break
+                _bulk["current"] = r["id"]
+            try:
+                _describe_and_cache(conn, r["id"])
+            except Exception:
+                with _bulk_lock:
+                    _bulk["failed"] += 1
+            with _bulk_lock:
+                _bulk["done"] += 1
+        with _bulk_lock:
+            _bulk.update(running=False, current=None)
+    except Exception as e:
+        with _bulk_lock:
+            _bulk.update(running=False, error=str(e))

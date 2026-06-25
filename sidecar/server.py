@@ -53,6 +53,8 @@ app.add_middleware(
 _progress_lock = threading.Lock()
 _progress: dict[str, IndexProgress] = {}
 _index_thread: threading.Thread | None = None
+_index_lock = threading.Lock()
+_index_queue: list[str] = []
 
 
 def _set_progress(folder: str, p: IndexProgress) -> None:
@@ -194,29 +196,44 @@ def set_folder_watch(body: WatchIn) -> dict[str, Any]:
     return {"ok": True, "watch": body.watch}
 
 
+def _index_worker() -> None:
+    """Drain the index queue one folder at a time so adding a folder while
+    another is indexing just queues it (instead of being silently dropped)."""
+    while True:
+        with _index_lock:
+            if not _index_queue:
+                return
+            path = _index_queue.pop(0)
+        root = Path(path)
+        prog = _progress.get(path) or IndexProgress()
+        prog.done = False
+        _set_progress(path, prog)
+        try:
+            index_folder(root, progress=prog, on_progress=lambda p: _set_progress(path, p))
+        except Exception as e:
+            prog.error = str(e)
+            prog.done = True
+            _set_progress(path, prog)
+
+
 @app.post("/index/start")
 def index_start(body: FolderIn) -> dict[str, Any]:
     global _index_thread
     root = Path(body.path).expanduser().resolve()
     if not root.is_dir():
         raise HTTPException(status_code=400, detail=f"Not a directory: {root}")
-    if _index_thread and _index_thread.is_alive():
-        raise HTTPException(status_code=409, detail="An index job is already running")
-
-    prog = IndexProgress()
-    _set_progress(str(root), prog)
-
-    def runner() -> None:
-        try:
-            index_folder(root, progress=prog, on_progress=lambda p: _set_progress(str(root), p))
-        except Exception as e:
-            prog.error = str(e)
-            prog.done = True
-            _set_progress(str(root), prog)
-
-    _index_thread = threading.Thread(target=runner, daemon=True)
-    _index_thread.start()
-    return {"ok": True, "folder": str(root)}
+    with _index_lock:
+        if str(root) not in _index_queue:
+            _index_queue.append(str(root))
+        # Show immediate "waiting" feedback in the UI.
+        existing = _progress.get(str(root))
+        if not existing or existing.done:
+            _set_progress(str(root), IndexProgress())
+        if not (_index_thread and _index_thread.is_alive()):
+            _index_thread = threading.Thread(target=_index_worker, daemon=True)
+            _index_thread.start()
+    queued = max(0, len(_index_queue) - 1)
+    return {"ok": True, "folder": str(root), "queued_behind": queued}
 
 
 @app.get("/index/status")
@@ -463,6 +480,26 @@ def photo_describe(photo_id: int, body: DescribeIn) -> dict[str, Any]:
 def photo_card(photo_id: int) -> dict[str, Any]:
     conn = db.connect()
     return vlm.card_status(conn, photo_id)
+
+
+@app.post("/vlm/describe-all")
+def vlm_describe_all() -> dict[str, Any]:
+    conn = db.connect()
+    if not vlm.available(conn):
+        raise HTTPException(status_code=400, detail="No vision model available.")
+    vlm.bulk_start()
+    return vlm.bulk_status()
+
+
+@app.post("/vlm/describe-all/stop")
+def vlm_describe_all_stop() -> dict[str, Any]:
+    vlm.bulk_stop()
+    return vlm.bulk_status()
+
+
+@app.get("/vlm/describe-all/status")
+def vlm_describe_all_status() -> dict[str, Any]:
+    return vlm.bulk_status()
 
 
 # ---------- chat ----------
