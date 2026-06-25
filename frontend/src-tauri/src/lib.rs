@@ -48,6 +48,18 @@ fn hide_spotlight(app: AppHandle) {
 }
 
 #[tauri::command]
+fn open_in_main(app: AppHandle, route: String) {
+    // Bring up the main window and navigate it to `route` (e.g. a photo page).
+    // Used by the spotlight's Enter key so a result opens in the full UI.
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        let _ = app.emit("navigate", route);
+    }
+}
+
+#[tauri::command]
 fn resize_spotlight(app: AppHandle, height: f64) {
     if let Some(win) = app.get_webview_window("spotlight") {
         let h = height.clamp(80.0, 720.0);
@@ -361,6 +373,14 @@ pub fn run() {
     let trigger = shortcut.clone();
 
     tauri::Builder::default()
+        // Must be the FIRST plugin. On Wayland (GNOME), apps can't grab a
+        // system-wide hotkey, so the native Ctrl+Space below won't fire. The
+        // workaround: a GNOME custom keyboard shortcut runs the Lumen binary
+        // again; this catches that second launch and toggles the spotlight
+        // instead of opening a duplicate window.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            toggle_spotlight(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(
@@ -377,6 +397,7 @@ pub fn run() {
             sidecar_port,
             show_main,
             hide_spotlight,
+            open_in_main,
             resize_spotlight,
             frontmost_folder
         ])
@@ -391,10 +412,18 @@ pub fn run() {
                 eprintln!("[lumen] failed to build tray: {e:?}");
             }
 
-            // Pre-create the spotlight window so the first Ctrl+Space is
-            // instant; it stays hidden until the user triggers it.
-            if let Err(e) = create_spotlight(&handle) {
-                eprintln!("[lumen] failed to create spotlight: {e:?}");
+            // Spotlight-first: opening Lumen shows a blank search bar. The
+            // main ("bigger") window stays hidden until you open a result or
+            // use the tray — so relaunching never dumps you back into the
+            // last full-UI view.
+            match create_spotlight(&handle) {
+                Ok(win) => {
+                    let _ = win.center();
+                    let _ = win.emit("spotlight://show", ());
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+                Err(e) => eprintln!("[lumen] failed to create spotlight: {e:?}"),
             }
 
             // Try registering the global hotkey. Some Linux compositors

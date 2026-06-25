@@ -1,6 +1,19 @@
 <script lang="ts">
   import "../app.css";
+  import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
   import { page } from "$app/stores";
+
+  // The spotlight's Enter key asks the shell to open a result here; the shell
+  // shows this window and emits "navigate" with the route to load.
+  onMount(async () => {
+    try {
+      const { listen } = await import("@tauri-apps/api/event");
+      await listen("navigate", (e) => goto(String(e.payload)));
+    } catch {
+      // plain browser / no tauri — nothing to wire up
+    }
+  });
 
   const tabs = [
     { href: "/chat/", label: "Chat" },

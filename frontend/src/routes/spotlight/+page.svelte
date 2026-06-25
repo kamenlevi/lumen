@@ -15,9 +15,16 @@
   let loading = $state(false);
   let scopeFolder = $state<string | null>(null);
   let inputEl: HTMLInputElement | null = $state(null);
+  let listEl: HTMLUListElement | null = $state(null);
   let unlistenShow: (() => void) | null = null;
   let unlistenKeydown: (() => void) | null = null;
   let debounce: ReturnType<typeof setTimeout> | null = null;
+
+  // Keep the keyboard-selected row visible as you arrow past the fold.
+  $effect(() => {
+    const el = listEl?.children[selected] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: "nearest" });
+  });
 
   const ROW_PX = 64;
   const HEADER_PX = 80;
@@ -82,13 +89,16 @@
   }
 
   async function activate(r: SearchResult) {
-    try {
-      const { open } = await import("@tauri-apps/plugin-shell");
-      await open(r.path);
-      await close();
-    } catch {
-      window.open(api.photoFileUrl(r.id));
+    // Open the selected photo in the main ("bigger") window, then dismiss
+    // the spotlight — Enter takes you into the full UI, not the OS viewer.
+    if (invoke) {
+      try {
+        await invoke("open_in_main", { route: `/photo/${r.id}/` });
+        await close();
+        return;
+      } catch { /* fall through to browser */ }
     }
+    window.location.href = `/photo/${r.id}/`;
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -166,8 +176,8 @@
 
   {#if results.length > 0}
     <div class="divider"></div>
-    <ul class="results" role="listbox">
-      {#each results.slice(0, MAX_ROWS) as r, i (r.id)}
+    <ul class="results" role="listbox" bind:this={listEl}>
+      {#each results as r, i (r.id)}
         <li
           role="option"
           aria-selected={i === selected}
@@ -258,7 +268,15 @@
     padding: 6px;
     list-style: none;
     max-height: calc(8 * 64px);
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  }
+  .results::-webkit-scrollbar { width: 8px; }
+  .results::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 4px;
   }
   .results li {
     display: flex;

@@ -3,3 +3,10 @@
 @tailwind utilities;
 
 html, body { height: 100%; }
+
+/* Opaque dark background for the main window. The spotlight route overrides
+   this to transparent (in spotlight/+layout@.svelte) so it can float. */
+body {
+  background: #0a0a0a;
+  color: #e5e5e5;
+}
