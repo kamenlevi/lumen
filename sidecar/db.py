@@ -246,8 +246,13 @@ def hydrate_results(conn: sqlite3.Connection, results_json: str | None) -> list[
     out: list[dict] = []
     for ref in refs:
         row = conn.execute(
-            """SELECT id, path, thumb_path, w, h, taken_at, camera, lat, lon
-                 FROM images WHERE id = ?""",
+            """SELECT images.id, images.path, images.thumb_path, images.w, images.h,
+                      images.taken_at, images.camera, images.lat, images.lon,
+                      q.sharpness, q.is_blurry, q.is_dark, q.is_bright,
+                      q.subject_out_of_focus
+                 FROM images
+            LEFT JOIN quality_metrics q ON q.image_id = images.id
+                WHERE images.id = ?""",
             (ref["id"],),
         ).fetchone()
         if row:

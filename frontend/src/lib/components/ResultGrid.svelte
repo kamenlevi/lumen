@@ -7,6 +7,16 @@
   function open(r: SearchResult) {
     goto(`/photo/${r.id}/`);
   }
+
+  // A small, honest quality badge so results can be verified at a glance.
+  function quality(r: SearchResult): { text: string; cls: string } | null {
+    if (r.is_blurry === 1) return { text: "blurry", cls: "bg-red-600/85" };
+    if (r.subject_out_of_focus === 1) return { text: "soft subject", cls: "bg-orange-600/85" };
+    if (r.is_dark === 1) return { text: "dark", cls: "bg-blue-700/85" };
+    if (r.is_bright === 1) return { text: "bright", cls: "bg-amber-500/85" };
+    if (r.sharpness != null) return { text: "sharp", cls: "bg-emerald-700/85" };
+    return null;
+  }
 </script>
 
 {#if results.length === 0}
@@ -26,6 +36,14 @@
         {#if showScore}
           <span class="absolute left-1.5 top-1.5 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-mono text-neutral-200">
             {r.score.toFixed(2)}
+          </span>
+        {/if}
+        {#if quality(r)}
+          {@const q = quality(r)}
+          <span
+            class="absolute right-1.5 top-1.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-white {q?.cls}"
+            title={r.sharpness != null ? `sharpness ${r.sharpness.toFixed(0)}` : ""}>
+            {q?.text}{#if r.sharpness != null}<span class="ml-1 font-mono opacity-80">{r.sharpness.toFixed(0)}</span>{/if}
           </span>
         {/if}
         <span

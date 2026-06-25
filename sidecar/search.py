@@ -27,9 +27,34 @@ class SearchResult:
     camera: str | None
     lat: float | None
     lon: float | None
+    # Tier-2 quality (None until the quality pass has run on the image)
+    sharpness: float | None = None
+    is_blurry: int | None = None
+    is_dark: int | None = None
+    is_bright: int | None = None
+    subject_out_of_focus: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
+
+
+# Map a quality intent keyword to a SQL predicate over quality_metrics.
+QUALITY_FILTERS: dict[str, str] = {
+    "blurry": "q.is_blurry = 1",
+    "sharp": "q.is_blurry = 0 AND q.sharpness IS NOT NULL",
+    "dark": "q.is_dark = 1",
+    "bright": "q.is_bright = 1",
+    "out_of_focus": "q.subject_out_of_focus = 1",
+}
+
+# How to order each quality query so the most relevant land first.
+QUALITY_ORDER: dict[str, str] = {
+    "blurry": "q.sharpness ASC",
+    "sharp": "q.sharpness DESC",
+    "dark": "q.brightness ASC",
+    "bright": "q.brightness DESC",
+    "out_of_focus": "q.focus_ratio ASC",
+}
 
 
 def _model_settings(conn: sqlite3.Connection) -> tuple[str, str]:
@@ -92,9 +117,11 @@ def search_by_vector(
     sql = f"""
     SELECT images.id, images.path, images.thumb_path, images.w, images.h,
            images.taken_at, images.camera, images.lat, images.lon,
+           q.sharpness, q.is_blurry, q.is_dark, q.is_bright, q.subject_out_of_focus,
            image_vecs.distance AS distance
       FROM image_vecs
       JOIN images ON images.id = image_vecs.id
+ LEFT JOIN quality_metrics q ON q.image_id = images.id
      WHERE image_vecs.embedding MATCH ?
        AND k = ?
        {('AND ' + where) if where else ''}
@@ -110,12 +137,55 @@ def search_by_vector(
         # ||a-b||^2 = 2 - 2*cos(a,b)  =>  cos = 1 - d^2 / 2
         d = float(r["distance"])
         score = max(0.0, 1.0 - (d * d) / 2.0)
-        out.append(SearchResult(
-            id=r["id"], score=score, path=r["path"], thumb_path=r["thumb_path"],
-            w=r["w"], h=r["h"], taken_at=r["taken_at"], camera=r["camera"],
-            lat=r["lat"], lon=r["lon"],
-        ))
+        out.append(_row_to_result(r, score))
     return out
+
+
+def _row_to_result(r, score: float) -> SearchResult:
+    return SearchResult(
+        id=r["id"], score=score, path=r["path"], thumb_path=r["thumb_path"],
+        w=r["w"], h=r["h"], taken_at=r["taken_at"], camera=r["camera"],
+        lat=r["lat"], lon=r["lon"],
+        sharpness=r["sharpness"], is_blurry=r["is_blurry"], is_dark=r["is_dark"],
+        is_bright=r["is_bright"], subject_out_of_focus=r["subject_out_of_focus"],
+    )
+
+
+def search_by_quality(
+    flag: str,
+    *,
+    top_k: int = 50,
+    candidate_ids: list[int] | None = None,
+) -> list[SearchResult]:
+    """Return photos matching a Tier-2 quality flag (blurry/sharp/dark/...),
+    ordered by how strongly they match. If `candidate_ids` is given, restrict
+    to those (used to combine a CLIP content search with a quality filter)."""
+    if flag not in QUALITY_FILTERS:
+        return []
+    conn = db.connect()
+    where = QUALITY_FILTERS[flag]
+    order = QUALITY_ORDER.get(flag, "q.image_id")
+    params: list[Any] = []
+    extra = ""
+    if candidate_ids is not None:
+        if not candidate_ids:
+            return []
+        qs = ",".join("?" * len(candidate_ids))
+        extra = f" AND images.id IN ({qs})"
+        params.extend(candidate_ids)
+    sql = f"""
+    SELECT images.id, images.path, images.thumb_path, images.w, images.h,
+           images.taken_at, images.camera, images.lat, images.lon,
+           q.sharpness, q.is_blurry, q.is_dark, q.is_bright, q.subject_out_of_focus
+      FROM images
+      JOIN quality_metrics q ON q.image_id = images.id
+     WHERE {where}{extra}
+     ORDER BY {order}
+     LIMIT ?
+    """
+    params.append(max(1, min(int(top_k), 500)))
+    rows = conn.execute(sql, params).fetchall()
+    return [_row_to_result(r, 1.0) for r in rows]
 
 
 def search_text(query: str, **kwargs) -> list[SearchResult]:

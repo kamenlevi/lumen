@@ -64,6 +64,12 @@ export interface SearchResult {
   camera: string | null;
   lat: number | null;
   lon: number | null;
+  // Tier-2 quality (null until the quality pass has run on the image)
+  sharpness?: number | null;
+  is_blurry?: number | null;
+  is_dark?: number | null;
+  is_bright?: number | null;
+  subject_out_of_focus?: number | null;
 }
 
 export interface PhotoDetail {

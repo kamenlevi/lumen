@@ -1,22 +1,41 @@
-"""Chat brain: turn a user message (in the context of a conversation) into an
-assistant reply plus any photo results to show.
+"""Chat brain: turn a user message into an assistant reply plus photo results.
 
-This is deliberately a thin, swappable seam. Right now it does the one thing we
-already have end-to-end — semantic photo search — and phrases a short reply.
-Later steps replace `respond()` with a real agent that can also call the Tier-2
-quality metrics and a Tier-3 vision model, and reason over multiple turns. The
-interface (conversation history in, text + result-refs out) stays the same, so
-the UI and storage never have to change.
+This is a deliberately thin, swappable seam. It is NOT yet a full LLM agent
+(that's a later step), but it already does more than keyword search: it
+recognises Tier-2 *quality* intents ("blurry", "sharp", "dark", "out of
+focus") and answers them by filtering the computed quality metrics — combined
+with CLIP when the query also names content ("blurry photos of the city").
 """
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
-from .search import search_text
+from . import db
+from .search import (
+    QUALITY_FILTERS,
+    SearchResult,
+    search_by_quality,
+    search_text,
+)
 
-# How many photos a search-style answer shows in the results gallery.
 DEFAULT_RESULT_K = 24
+# When combining content + quality, pull a wider CLIP net first, then filter.
+CONTENT_CANDIDATE_K = 200
+
+# Phrases that signal a quality intent → (flag, human label). Multi-word
+# phrases are checked first so "out of focus" wins over "focus".
+_QUALITY_PHRASES: list[tuple[str, str, str]] = [
+    (r"subject.{0,20}out of focus|out of focus.{0,20}subject|missed focus|"
+     r"focus on the background|background (is )?in focus",
+     "out_of_focus", "out of focus on the subject"),
+    (r"out[- ]of[- ]focus|blurry|blurred|\bblur\b|not sharp|soft focus|motion blur",
+     "blurry", "blurry"),
+    (r"\bsharp(est)?\b|in focus|crisp|tack sharp", "sharp", "sharp"),
+    (r"under[- ]?exposed|too dark|\bdark\b|dim\b|underexposed", "dark", "dark / underexposed"),
+    (r"over[- ]?exposed|too bright|blown out|overexposed|\bbright\b", "bright", "bright / overexposed"),
+]
 
 
 def _title_from(text: str) -> str:
@@ -24,30 +43,106 @@ def _title_from(text: str) -> str:
     return (t[:40] + "…") if len(t) > 40 else t or "New chat"
 
 
+def _detect_quality(text: str) -> tuple[str, str, str] | None:
+    """Return (flag, label, matched_phrase) if the text names a quality intent."""
+    low = text.lower()
+    for pattern, flag, label in _QUALITY_PHRASES:
+        m = re.search(pattern, low)
+        if m:
+            return flag, label, m.group(0)
+    return None
+
+
+def _residual_content(text: str) -> str:
+    """Strip quality words so the rest can be a CLIP content query
+    ("blurry photos of the city" → "the city")."""
+    low = text
+    for pattern, _flag, _label in _QUALITY_PHRASES:
+        low = re.sub(pattern, " ", low, flags=re.IGNORECASE)
+    # drop filler so a bare "blurry photos" leaves nothing to CLIP-search
+    low = re.sub(r"\b(photos?|pictures?|images?|shots?|subjects?|of|my|the|all|show|me|find|with|that|are|is|which|ones?)\b",
+                 " ", low, flags=re.IGNORECASE)
+    return " ".join(low.split())
+
+
+def _refs(results: list[SearchResult]) -> list[dict]:
+    return [{"id": r.id, "score": round(r.score, 4)} for r in results]
+
+
+def _have_quality_data(conn: sqlite3.Connection) -> bool:
+    row = conn.execute("SELECT COUNT(*) AS n FROM quality_metrics").fetchone()
+    return bool(row and row["n"])
+
+
 def respond(
     conn: sqlite3.Connection,
     history: list[sqlite3.Row],
     user_text: str,
 ) -> tuple[str, list[dict]]:
-    """Return (assistant_text, result_refs). `result_refs` is a list of
-    {"id", "score"} dicts to persist and hydrate for the gallery.
-
-    `history` is the prior messages in this chat (oldest first), available for
-    future multi-turn reasoning. v1 answers each turn as a fresh search.
-    """
     query = user_text.strip()
     if not query:
         return ("What would you like to find or know about your photos?", [])
 
-    results = search_text(query, top_k=DEFAULT_RESULT_K)
-    refs = [{"id": r.id, "score": round(r.score, 4)} for r in results]
+    quality = _detect_quality(query)
+    if quality:
+        return _answer_quality(conn, query, quality)
 
-    if not refs:
-        text = (
-            f'I couldn’t find anything matching “{query}”. '
-            "Make sure the folder is indexed in the Library tab, or try "
-            "describing the photo a different way."
+    # Plain semantic search.
+    results = search_text(query, top_k=DEFAULT_RESULT_K)
+    if not results:
+        return (
+            f"I couldn’t find anything matching “{query}”. Make sure the folder "
+            "is indexed in the Library tab, or try describing it differently.",
+            [],
         )
-    else:
-        text = f'Here are {len(refs)} photos matching “{query}”.'
-    return (text, refs)
+    return (f"Here are {len(results)} photos matching “{query}”.", _refs(results))
+
+
+def _answer_quality(
+    conn: sqlite3.Connection,
+    query: str,
+    quality: tuple[str, str, str],
+) -> tuple[str, list[dict]]:
+    flag, label, _phrase = quality
+
+    if not _have_quality_data(conn):
+        return (
+            "I haven’t analysed your library for image quality yet (sharpness, "
+            "exposure, focus). Once that pass has run I can answer this — for now "
+            "I can only do content search.",
+            [],
+        )
+
+    content = _residual_content(query)
+    if content:
+        # Narrow by content with CLIP, then keep only those matching the quality flag.
+        clip_hits = search_text(content, top_k=CONTENT_CANDIDATE_K)
+        cand_ids = [r.id for r in clip_hits]
+        results = search_by_quality(flag, top_k=DEFAULT_RESULT_K, candidate_ids=cand_ids)
+        if not results:
+            return (
+                f"None of the photos matching “{content}” look {label}. "
+                f"(Checked {len(cand_ids)} content matches against the quality metrics.)",
+                [],
+            )
+        return (
+            f"Of your photos matching “{content}”, {len(results)} are {label} — "
+            f"sorted by how {label} they are. Each tile shows its score so you can verify.",
+            _refs(results),
+        )
+
+    # Pure quality query over the whole library.
+    results = search_by_quality(flag, top_k=DEFAULT_RESULT_K)
+    total = conn.execute(
+        f"SELECT COUNT(*) AS n FROM quality_metrics q WHERE {QUALITY_FILTERS[flag]}"
+    ).fetchone()["n"]
+    if not results:
+        return (f"I didn’t find any {label} photos in your library.", [])
+    shown = len(results)
+    more = f", showing the strongest {shown}" if total > shown else ""
+    return (
+        f"{total} photo{'s' if total != 1 else ''} in your library "
+        f"{'are' if total != 1 else 'is'} {label}{more}. Each tile shows its "
+        f"sharpness score so you can check my work.",
+        _refs(results),
+    )
