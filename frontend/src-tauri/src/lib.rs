@@ -237,6 +237,37 @@ fn kill_sidecar() {
     }
 }
 
+/// Lumen's data dir — mirrors sidecar/paths.py so we can find the port file.
+fn data_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("LUMEN_DATA_DIR") {
+        if !d.is_empty() {
+            return PathBuf::from(d);
+        }
+    }
+    if let Ok(x) = std::env::var("XDG_DATA_HOME") {
+        if !x.is_empty() {
+            return PathBuf::from(x).join("lumen");
+        }
+    }
+    if let Ok(h) = std::env::var("HOME") {
+        return PathBuf::from(h).join(".local/share/lumen");
+    }
+    PathBuf::from(".")
+}
+
+/// If a sidecar from another (first) instance is already serving, return its
+/// port. A second instance reuses it instead of spawning a duplicate torch
+/// process that would just leak when this instance is single-instanced away.
+fn existing_sidecar_port() -> Option<u16> {
+    use std::net::TcpStream;
+    use std::time::Duration;
+    let pf = data_dir().join("server.port");
+    let port: u16 = std::fs::read_to_string(&pf).ok()?.trim().parse().ok()?;
+    let addr = format!("127.0.0.1:{port}").parse().ok()?;
+    TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok()?;
+    Some(port)
+}
+
 // ---------- windows ----------
 
 fn create_spotlight(app: &AppHandle) -> tauri::Result<WebviewWindow> {
@@ -253,6 +284,32 @@ fn create_spotlight(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .build()
 }
 
+/// Place the spotlight horizontally centred and in the upper third of the
+/// screen (Spotlight-style), rather than dead-centre.
+fn position_spotlight(win: &WebviewWindow) {
+    let monitor = win
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| win.primary_monitor().ok().flatten());
+    if let Some(m) = monitor {
+        let msize = m.size();
+        let mpos = m.position();
+        if let Ok(wsize) = win.outer_size() {
+            let x = mpos.x as f64 + (msize.width as f64 - wsize.width as f64) / 2.0;
+            let y = mpos.y as f64 + msize.height as f64 * 0.16;
+            let _ = win.set_position(tauri::PhysicalPosition::new(x.max(0.0), y.max(0.0)));
+        }
+    }
+}
+
+fn show_spotlight(win: &WebviewWindow) {
+    let _ = win.emit("spotlight://show", ());
+    position_spotlight(win);
+    let _ = win.show();
+    let _ = win.set_focus();
+}
+
 fn toggle_spotlight(app: &AppHandle) {
     let win = match app.get_webview_window("spotlight") {
         Some(w) => w,
@@ -264,14 +321,10 @@ fn toggle_spotlight(app: &AppHandle) {
             }
         },
     };
-    let visible = win.is_visible().unwrap_or(false);
-    if visible {
+    if win.is_visible().unwrap_or(false) {
         let _ = win.hide();
     } else {
-        let _ = win.emit("spotlight://show", ());
-        let _ = win.center();
-        let _ = win.show();
-        let _ = win.set_focus();
+        show_spotlight(&win);
     }
 }
 
@@ -403,7 +456,18 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
-            if let Err(e) = spawn_sidecar(&handle, Arc::clone(&port)) {
+            // Reuse a sidecar that's already running (e.g. this is a second
+            // launch from Ctrl+Space) rather than spawning a duplicate.
+            if let Some(p) = existing_sidecar_port() {
+                *port.lock().unwrap() = Some(p);
+                let script = format!("window.__LUMEN_PORT = {p};");
+                for label in ["main", "spotlight"] {
+                    if let Some(win) = handle.get_webview_window(label) {
+                        let _ = win.eval(&script);
+                    }
+                }
+                let _ = handle.emit("sidecar://ready", SidecarReady { port: p });
+            } else if let Err(e) = spawn_sidecar(&handle, Arc::clone(&port)) {
                 eprintln!("[lumen] failed to spawn sidecar: {e:?}");
             }
 
@@ -417,12 +481,7 @@ pub fn run() {
             // use the tray — so relaunching never dumps you back into the
             // last full-UI view.
             match create_spotlight(&handle) {
-                Ok(win) => {
-                    let _ = win.center();
-                    let _ = win.emit("spotlight://show", ());
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                }
+                Ok(win) => show_spotlight(&win),
                 Err(e) => eprintln!("[lumen] failed to create spotlight: {e:?}"),
             }
 
