@@ -261,6 +261,30 @@ def photo_detail(photo_id: int) -> dict[str, Any]:
     return dict(row)
 
 
+@app.get("/photo/{photo_id}/neighbors")
+def photo_neighbors(photo_id: int) -> dict[str, Any]:
+    """Previous/next photo in the same folder, ordered by capture time then
+    path — so arrow keys walk a folder the way a photographer expects."""
+    conn = db.connect()
+    row = conn.execute("SELECT folder_id FROM images WHERE id = ?", (photo_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM images WHERE folder_id = ? ORDER BY COALESCE(taken_at, ''), path",
+        (row["folder_id"],),
+    )]
+    try:
+        i = ids.index(photo_id)
+    except ValueError:
+        return {"prev": None, "next": None, "index": None, "total": len(ids)}
+    return {
+        "prev": ids[i - 1] if i > 0 else None,
+        "next": ids[i + 1] if i < len(ids) - 1 else None,
+        "index": i + 1,
+        "total": len(ids),
+    }
+
+
 @app.get("/photo/{photo_id}/similar")
 def photo_similar(photo_id: int, k: int = Query(20, ge=1, le=200)) -> dict[str, Any]:
     results = similar_to(photo_id, top_k=k)
