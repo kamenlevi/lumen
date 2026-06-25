@@ -5,20 +5,13 @@ import { writable } from "svelte/store";
 export const mode = writable<"compact" | "expanded">("compact");
 export const spotlightQuery = writable<string>("");
 
-const SIZES = {
-  compact: { w: 720, h: 96 },
-  expanded: { w: 1120, h: 760 },
-};
-
 export async function applyMode(m: "compact" | "expanded") {
   mode.set(m);
   try {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    const { LogicalSize } = await import("@tauri-apps/api/dpi");
-    const win = getCurrentWindow();
-    const s = SIZES[m];
-    await win.setSize(new LogicalSize(s.w, s.h));
-    try { await win.center(); } catch { /* GNOME Wayland blocks positioning */ }
+    // Resize in Rust — the JS setSize was silently failing on Wayland, which
+    // left the expanded window stuck at the compact bar's height.
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("set_window_mode", { expanded: m === "expanded" });
   } catch { /* not running in Tauri */ }
 }
 

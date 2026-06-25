@@ -60,10 +60,38 @@ fn open_in_main(app: AppHandle, route: String) {
 }
 
 #[tauri::command]
-fn resize_spotlight(app: AppHandle, height: f64) {
-    if let Some(win) = app.get_webview_window("spotlight") {
-        let h = height.clamp(80.0, 720.0);
-        let _ = win.set_size(LogicalSize::new(640.0, h));
+fn set_window_mode(app: AppHandle, expanded: bool) {
+    // Resize the single window between the compact bar and the full app.
+    // Done in Rust (not JS) because the JS setSize was failing on Wayland.
+    if let Some(win) = app.get_webview_window("main") {
+        let (w, h) = if expanded { (1120.0, 760.0) } else { (720.0, 96.0) };
+        let _ = win.set_size(LogicalSize::new(w, h));
+        position_window(&win, w, h);
+    }
+}
+
+/// Centre the window horizontally, then nudge it a bit to the right (GNOME
+/// Wayland may ignore the move; harmless if so). Keeps it vertically centred.
+fn position_window(win: &WebviewWindow, w_logical: f64, h_logical: f64) {
+    let monitor = win
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| win.primary_monitor().ok().flatten());
+    if let Some(m) = monitor {
+        let scale = m.scale_factor();
+        let msize = m.size();
+        let mpos = m.position();
+        let win_w = w_logical * scale;
+        let win_h = h_logical * scale;
+        let center_x = (msize.width as f64 - win_w) / 2.0;
+        let offset = msize.width as f64 * 0.08; // "a bit" to the right
+        let x = (center_x + offset).min(msize.width as f64 - win_w).max(0.0);
+        let y = ((msize.height as f64 - win_h) / 2.0).max(0.0);
+        let _ = win.set_position(tauri::PhysicalPosition::new(
+            mpos.x as f64 + x,
+            mpos.y as f64 + y,
+        ));
     }
 }
 
@@ -411,9 +439,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             sidecar_port,
             show_main,
-            hide_spotlight,
             open_in_main,
-            resize_spotlight,
+            set_window_mode,
             frontmost_folder
         ])
         .setup(move |app| {
