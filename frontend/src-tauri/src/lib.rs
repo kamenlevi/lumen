@@ -268,77 +268,39 @@ fn existing_sidecar_port() -> Option<u16> {
     Some(port)
 }
 
-// ---------- windows ----------
+// ---------- window (single, dual-mode: compact spotlight ⇄ expanded app) ----------
 
-fn create_spotlight(app: &AppHandle) -> tauri::Result<WebviewWindow> {
-    // Load the SPA root (index.html); the frontend routes to the spotlight
-    // view based on this window's label. Requesting "spotlight/" directly 404s
-    // in the static build (only index.html is emitted).
-    WebviewWindowBuilder::new(app, "spotlight", WebviewUrl::App("index.html".into()))
-        .title("Lumen")
-        .inner_size(640.0, 80.0)
-        .resizable(false)
-        .decorations(false)
-        // Opaque, not transparent: GNOME's compositor handling of transparent
-        // undecorated windows left a black rectangle. A solid window with a
-        // matching page background looks clean and renders reliably.
-        .transparent(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .build()
-}
-
-/// Place the spotlight horizontally centred and in the upper third of the
-/// screen (Spotlight-style), rather than dead-centre.
-fn position_spotlight(win: &WebviewWindow) {
-    let monitor = win
-        .current_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| win.primary_monitor().ok().flatten());
-    if let Some(m) = monitor {
-        let msize = m.size();
-        let mpos = m.position();
-        if let Ok(wsize) = win.outer_size() {
-            let x = mpos.x as f64 + (msize.width as f64 - wsize.width as f64) / 2.0;
-            // Horizontally centred, vertically a bit above the middle.
-            let y = mpos.y as f64 + (msize.height as f64 - wsize.height as f64) * 0.30;
-            let _ = win.set_position(tauri::PhysicalPosition::new(x.max(0.0), y.max(0.0)));
-        }
-    }
-}
-
-fn show_spotlight(win: &WebviewWindow) {
-    let _ = win.emit("spotlight://show", ());
-    position_spotlight(win);
-    let _ = win.show();
-    let _ = win.set_focus();
-}
-
-fn toggle_spotlight(app: &AppHandle) {
-    let win = match app.get_webview_window("spotlight") {
-        Some(w) => w,
-        None => match create_spotlight(app) {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("[lumen] failed to create spotlight: {e:?}");
-                return;
-            }
-        },
-    };
-    if win.is_visible().unwrap_or(false) {
-        let _ = win.hide();
-    } else {
-        show_spotlight(&win);
-    }
-}
-
-fn show_main_window(app: &AppHandle) {
+/// Show the one window in compact (spotlight) mode — a centred search bar.
+/// The frontend listens for "ui://spotlight" to switch mode and resize.
+fn show_compact(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit("ui://spotlight", ());
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
+    }
+}
+
+/// Show the window in expanded (full UI) mode.
+fn show_expanded(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit("ui://expand", ());
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
+/// Ctrl+Space: hide if it's up and focused, otherwise pop the compact bar.
+fn toggle_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let visible = win.is_visible().unwrap_or(false);
+        let focused = win.is_focused().unwrap_or(false);
+        if visible && focused {
+            let _ = win.hide();
+        } else {
+            show_compact(app);
+        }
     }
 }
 
@@ -390,21 +352,15 @@ fn build_tray(app: &AppHandle) -> anyhow::Result<()> {
 
 fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
-        "show" => show_main_window(app),
-        "search" => toggle_spotlight(app),
+        "show" => show_expanded(app),
+        "search" => show_compact(app),
         "settings" => {
-            show_main_window(app);
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.eval("window.location.hash = '#nav:settings';");
-                let _ = app.emit("nav", "settings");
-            }
+            show_expanded(app);
+            let _ = app.emit("navigate", "/settings/");
         }
         "library" => {
-            show_main_window(app);
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.eval("window.location.hash = '#nav:library';");
-                let _ = app.emit("nav", "library");
-            }
+            show_expanded(app);
+            let _ = app.emit("navigate", "/library/");
         }
         "quit" => {
             kill_sidecar();
@@ -438,7 +394,7 @@ pub fn run() {
         // again; this catches that second launch and toggles the spotlight
         // instead of opening a duplicate window.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            toggle_spotlight(app);
+            toggle_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -446,7 +402,7 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, sc, event| {
                     if event.state() == ShortcutState::Pressed && sc == &trigger {
-                        toggle_spotlight(app);
+                        toggle_window(app);
                     }
                 })
                 .build(),
@@ -467,10 +423,8 @@ pub fn run() {
             if let Some(p) = existing_sidecar_port() {
                 *port.lock().unwrap() = Some(p);
                 let script = format!("window.__LUMEN_PORT = {p};");
-                for label in ["main", "spotlight"] {
-                    if let Some(win) = handle.get_webview_window(label) {
-                        let _ = win.eval(&script);
-                    }
+                if let Some(win) = handle.get_webview_window("main") {
+                    let _ = win.eval(&script);
                 }
                 let _ = handle.emit("sidecar://ready", SidecarReady { port: p });
             } else if let Err(e) = spawn_sidecar(&handle, Arc::clone(&port)) {
@@ -482,14 +436,9 @@ pub fn run() {
                 eprintln!("[lumen] failed to build tray: {e:?}");
             }
 
-            // Spotlight-first: opening Lumen shows a blank search bar. The
-            // main ("bigger") window stays hidden until you open a result or
-            // use the tray — so relaunching never dumps you back into the
-            // last full-UI view.
-            match create_spotlight(&handle) {
-                Ok(win) => show_spotlight(&win),
-                Err(e) => eprintln!("[lumen] failed to create spotlight: {e:?}"),
-            }
+            // Spotlight-first: opening Lumen pops the compact search bar. It
+            // expands into the full UI in place when you search or open a result.
+            show_compact(&handle);
 
             // Try registering the global hotkey. Some Linux compositors
             // refuse — fail soft so the rest of the app keeps working.
@@ -502,14 +451,8 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Hide the spotlight on focus loss or ESC — feels native.
-            if window.label() == "spotlight" {
-                if let tauri::WindowEvent::Focused(false) = event {
-                    let _ = window.hide();
-                }
-            }
-            // Hitting the close button on the main window just hides it
-            // — the tray icon keeps the app alive.
+            // Closing just hides — the tray icon keeps Lumen alive. Compact-mode
+            // blur-to-hide is handled in the frontend (only when it's the bar).
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();

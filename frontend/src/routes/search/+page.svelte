@@ -1,8 +1,20 @@
 <script lang="ts">
   import { api, type SearchResult } from "$lib/ipc";
   import ResultGrid from "$lib/components/ResultGrid.svelte";
+  import { spotlightQuery } from "$lib/shell";
 
   let query = $state("");
+
+  // When the compact bar submits a query, run it here (works even if we're
+  // already on /search). Clearing the store afterwards avoids re-running.
+  $effect(() => {
+    const q = $spotlightQuery;
+    if (q) {
+      query = q;
+      spotlightQuery.set("");
+      run();
+    }
+  });
   let results = $state<SearchResult[]>([]);
   let loading = $state(false);
   let err = $state<string | null>(null);

@@ -15,10 +15,13 @@
       {
         "label": "main",
         "title": "Lumen",
-        "width": 1200,
-        "height": 800,
-        "minWidth": 800,
-        "minHeight": 600,
+        "width": 720,
+        "height": 96,
+        "minWidth": 420,
+        "minHeight": 80,
+        "decorations": false,
+        "transparent": false,
+        "resizable": true,
         "visible": false,
         "center": true
       }
