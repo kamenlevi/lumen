@@ -14,11 +14,18 @@ import sqlite3
 
 from . import db
 from .search import (
+    COLOR_BINS,
     QUALITY_FILTERS,
     SearchResult,
+    search_by_color,
     search_by_quality,
     search_text,
 )
+
+# Color words we can answer with the cheap hue histogram (no model).
+_COLOR_SPECIAL = ["colorful", "colourful", "vibrant", "monochrome",
+                  "black and white", "grayscale", "greyscale", "b&w"]
+_COLOR_WORDS = list(COLOR_BINS.keys()) + _COLOR_SPECIAL
 
 DEFAULT_RESULT_K = 24
 # When combining content + quality, pull a wider CLIP net first, then filter.
@@ -53,14 +60,24 @@ def _detect_quality(text: str) -> tuple[str, str, str] | None:
     return None
 
 
-def _residual_content(text: str) -> str:
-    """Strip quality words so the rest can be a CLIP content query
-    ("blurry photos of the city" → "the city")."""
+def _detect_color(text: str) -> str | None:
+    low = text.lower()
+    for word in sorted(_COLOR_WORDS, key=len, reverse=True):  # multiword first
+        if re.search(rf"\b{re.escape(word)}\b", low):
+            return word
+    return None
+
+
+def _residual_content(text: str, extra_words: list[str] | None = None) -> str:
+    """Strip quality/color words so the rest can be a CLIP content query
+    ("blurry photos of the city" → "city")."""
     low = text
     for pattern, _flag, _label in _QUALITY_PHRASES:
         low = re.sub(pattern, " ", low, flags=re.IGNORECASE)
+    for word in extra_words or []:
+        low = re.sub(rf"\b{re.escape(word)}\b", " ", low, flags=re.IGNORECASE)
     # drop filler so a bare "blurry photos" leaves nothing to CLIP-search
-    low = re.sub(r"\b(photos?|pictures?|images?|shots?|subjects?|of|my|the|all|show|me|find|with|that|are|is|which|ones?)\b",
+    low = re.sub(r"\b(photos?|pictures?|images?|shots?|subjects?|colou?red?|of|my|the|all|show|me|find|with|that|are|is|which|ones?)\b",
                  " ", low, flags=re.IGNORECASE)
     return " ".join(low.split())
 
@@ -87,6 +104,10 @@ def respond(
     if quality:
         return _answer_quality(conn, query, quality)
 
+    color = _detect_color(query)
+    if color:
+        return _answer_color(conn, query, color)
+
     # Plain semantic search.
     results = search_text(query, top_k=DEFAULT_RESULT_K)
     if not results:
@@ -96,6 +117,41 @@ def respond(
             [],
         )
     return (f"Here are {len(results)} photos matching “{query}”.", _refs(results))
+
+
+def _answer_color(
+    conn: sqlite3.Connection,
+    query: str,
+    color: str,
+) -> tuple[str, list[dict]]:
+    if not conn.execute("SELECT COUNT(*) AS n FROM color_metrics").fetchone()["n"]:
+        return (
+            "I haven’t analysed your library’s colors yet. Once that quick pass "
+            "has run, “find pink photos” becomes an instant filter.",
+            [],
+        )
+
+    content = _residual_content(query, extra_words=[color])
+    if content:
+        clip_hits = search_text(content, top_k=CONTENT_CANDIDATE_K)
+        cand_ids = [r.id for r in clip_hits]
+        results = search_by_color(color, top_k=DEFAULT_RESULT_K, candidate_ids=cand_ids)
+        if not results:
+            return (f"None of your “{content}” photos are noticeably {color}.", [])
+        return (
+            f"Your {color} photos matching “{content}” — {len(results)}, "
+            f"most {color} first.",
+            _refs(results),
+        )
+
+    results = search_by_color(color, top_k=DEFAULT_RESULT_K)
+    if not results:
+        return (f"I didn’t find noticeably {color} photos in your library.", [])
+    return (
+        f"Here are your most {color} photos ({len(results)} shown, "
+        f"strongest first). This uses each photo’s color makeup, not keywords.",
+        _refs(results),
+    )
 
 
 def _answer_quality(

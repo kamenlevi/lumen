@@ -33,9 +33,27 @@ class SearchResult:
     is_dark: int | None = None
     is_bright: int | None = None
     subject_out_of_focus: int | None = None
+    dominant_hex: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
+
+
+# Color name → the 30° hue bins (0=red..11=pink) that count toward it.
+COLOR_BINS: dict[str, list[int]] = {
+    "red": [11, 0],
+    "orange": [0, 1],
+    "golden": [0, 1],
+    "yellow": [1, 2],
+    "green": [2, 3, 4],
+    "teal": [5, 6],
+    "cyan": [5, 6],
+    "blue": [6, 7, 8],
+    "purple": [8, 9],
+    "violet": [8, 9],
+    "pink": [9, 10, 11],
+    "magenta": [10, 11],
+}
 
 
 # Map a quality intent keyword to a SQL predicate over quality_metrics.
@@ -118,10 +136,12 @@ def search_by_vector(
     SELECT images.id, images.path, images.thumb_path, images.w, images.h,
            images.taken_at, images.camera, images.lat, images.lon,
            q.sharpness, q.is_blurry, q.is_dark, q.is_bright, q.subject_out_of_focus,
+           cm.dominant_hex,
            image_vecs.distance AS distance
       FROM image_vecs
       JOIN images ON images.id = image_vecs.id
  LEFT JOIN quality_metrics q ON q.image_id = images.id
+ LEFT JOIN color_metrics cm ON cm.image_id = images.id
      WHERE image_vecs.embedding MATCH ?
        AND k = ?
        {('AND ' + where) if where else ''}
@@ -141,14 +161,76 @@ def search_by_vector(
     return out
 
 
+def _g(row: sqlite3.Row, key: str) -> Any:
+    """Safely read an optional column that some queries don't select."""
+    return row[key] if key in row.keys() else None
+
+
 def _row_to_result(r, score: float) -> SearchResult:
     return SearchResult(
         id=r["id"], score=score, path=r["path"], thumb_path=r["thumb_path"],
         w=r["w"], h=r["h"], taken_at=r["taken_at"], camera=r["camera"],
         lat=r["lat"], lon=r["lon"],
-        sharpness=r["sharpness"], is_blurry=r["is_blurry"], is_dark=r["is_dark"],
-        is_bright=r["is_bright"], subject_out_of_focus=r["subject_out_of_focus"],
+        sharpness=_g(r, "sharpness"), is_blurry=_g(r, "is_blurry"),
+        is_dark=_g(r, "is_dark"), is_bright=_g(r, "is_bright"),
+        subject_out_of_focus=_g(r, "subject_out_of_focus"),
+        dominant_hex=_g(r, "dominant_hex"),
     )
+
+
+def search_by_color(
+    color: str,
+    *,
+    top_k: int = 50,
+    min_fraction: float = 0.06,
+    candidate_ids: list[int] | None = None,
+) -> list[SearchResult]:
+    """Find photos containing a named color, scored by how much of that hue
+    they contain. Special words: 'colorful'/'vibrant', 'monochrome'/'black and
+    white'. Scoring runs in Python over the stored hue histograms."""
+    import json as _json
+
+    conn = db.connect()
+    where = ""
+    params: list[Any] = []
+    if candidate_ids is not None:
+        if not candidate_ids:
+            return []
+        where = f" AND images.id IN ({','.join('?' * len(candidate_ids))})"
+        params.extend(candidate_ids)
+    rows = conn.execute(f"""
+        SELECT images.id, images.path, images.thumb_path, images.w, images.h,
+               images.taken_at, images.camera, images.lat, images.lon,
+               q.sharpness, q.is_blurry, q.is_dark, q.is_bright, q.subject_out_of_focus,
+               cm.color_hist, cm.colorfulness, cm.dominant_hex
+          FROM images
+          JOIN color_metrics cm ON cm.image_id = images.id
+     LEFT JOIN quality_metrics q ON q.image_id = images.id
+         WHERE cm.color_hist IS NOT NULL{where}
+    """, params).fetchall()
+
+    word = color.lower()
+    scored: list[tuple[float, Any]] = []
+    for r in rows:
+        cf = r["colorfulness"] or 0.0
+        if word in ("colorful", "vibrant", "colourful"):
+            score = cf
+            ok = cf >= 0.45
+        elif word in ("monochrome", "mono", "grayscale", "greyscale", "black and white", "b&w"):
+            score = 1.0 - cf
+            ok = cf <= 0.06
+        else:
+            bins = COLOR_BINS.get(word)
+            if not bins:
+                return []
+            hist = _json.loads(r["color_hist"])
+            score = sum(hist[b] for b in bins)
+            ok = score >= min_fraction
+        if ok:
+            scored.append((score, r))
+
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [_row_to_result(r, round(s, 4)) for s, r in scored[:max(1, min(top_k, 500))]]
 
 
 def search_by_quality(
@@ -176,9 +258,11 @@ def search_by_quality(
     sql = f"""
     SELECT images.id, images.path, images.thumb_path, images.w, images.h,
            images.taken_at, images.camera, images.lat, images.lon,
-           q.sharpness, q.is_blurry, q.is_dark, q.is_bright, q.subject_out_of_focus
+           q.sharpness, q.is_blurry, q.is_dark, q.is_bright, q.subject_out_of_focus,
+           cm.dominant_hex
       FROM images
       JOIN quality_metrics q ON q.image_id = images.id
+ LEFT JOIN color_metrics cm ON cm.image_id = images.id
      WHERE {where}{extra}
      ORDER BY {order}
      LIMIT ?

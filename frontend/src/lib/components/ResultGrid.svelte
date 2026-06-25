@@ -47,8 +47,14 @@
           </span>
         {/if}
         <span
-          class="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-2 py-1 text-left text-[11px] text-neutral-200">
-          {r.path.split("/").pop()}
+          class="absolute inset-x-0 bottom-0 flex items-center gap-1.5 truncate bg-gradient-to-t from-black/80 to-transparent px-2 py-1 text-left text-[11px] text-neutral-200">
+          {#if r.dominant_hex}
+            <span
+              class="inline-block h-2.5 w-2.5 flex-shrink-0 rounded-full ring-1 ring-white/30"
+              style="background-color: {r.dominant_hex}"
+              title="dominant color {r.dominant_hex}"></span>
+          {/if}
+          <span class="truncate">{r.path.split("/").pop()}</span>
         </span>
       </button>
     {/each}

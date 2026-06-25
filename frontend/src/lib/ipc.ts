@@ -70,6 +70,7 @@ export interface SearchResult {
   is_dark?: number | null;
   is_bright?: number | null;
   subject_out_of_focus?: number | null;
+  dominant_hex?: string | null;
 }
 
 export interface PhotoDetail {

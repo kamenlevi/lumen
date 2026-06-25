@@ -90,6 +90,17 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 
 CREATE INDEX IF NOT EXISTS chat_messages_chat_idx ON chat_messages(chat_id, id);
+
+-- Tier-2 color analysis: dominant-hue histogram per image, computed once from
+-- the cached thumbnail. Lets "find pink / blue / green photos" be an instant
+-- filter — no model needed (CLIP is bad at color; this isn't).
+CREATE TABLE IF NOT EXISTS color_metrics (
+    image_id INTEGER PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
+    color_hist TEXT,      -- JSON: 12 floats, fraction of pixels per 30° hue bin
+    colorfulness REAL,    -- fraction of pixels that are colorful (vs grey/dark)
+    dominant_hex TEXT,    -- representative color, for a swatch in the UI
+    analyzed_at REAL NOT NULL
+);
 """
 
 
@@ -166,6 +177,22 @@ def get_quality(conn: sqlite3.Connection, image_id: int) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM quality_metrics WHERE image_id = ?", (image_id,)
     ).fetchone()
+
+
+def upsert_color(conn: sqlite3.Connection, image_id: int, m: dict) -> None:
+    import time as _t
+    conn.execute(
+        """INSERT INTO color_metrics(image_id, color_hist, colorfulness,
+                                     dominant_hex, analyzed_at)
+           VALUES(?,?,?,?,?)
+           ON CONFLICT(image_id) DO UPDATE SET
+             color_hist=excluded.color_hist,
+             colorfulness=excluded.colorfulness,
+             dominant_hex=excluded.dominant_hex,
+             analyzed_at=excluded.analyzed_at""",
+        (image_id, m.get("color_hist"), m.get("colorfulness"),
+         m.get("dominant_hex"), _t.time()),
+    )
 
 
 # ---------- chat ----------
@@ -249,9 +276,10 @@ def hydrate_results(conn: sqlite3.Connection, results_json: str | None) -> list[
             """SELECT images.id, images.path, images.thumb_path, images.w, images.h,
                       images.taken_at, images.camera, images.lat, images.lon,
                       q.sharpness, q.is_blurry, q.is_dark, q.is_bright,
-                      q.subject_out_of_focus
+                      q.subject_out_of_focus, cm.dominant_hex
                  FROM images
             LEFT JOIN quality_metrics q ON q.image_id = images.id
+            LEFT JOIN color_metrics cm ON cm.image_id = images.id
                 WHERE images.id = ?""",
             (ref["id"],),
         ).fetchone()
