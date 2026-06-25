@@ -22,25 +22,46 @@ export function sidecarBase(): string {
     const envPort = (import.meta as any).env?.VITE_SIDECAR_PORT;
     if (envPort) port = Number(envPort);
   }
-  if (!port) port = 8765;
-  cachedBase = `http://127.0.0.1:${port}`;
-  return cachedBase;
+  // Only cache once we know a real port. The Tauri shell injects
+  // window.__LUMEN_PORT a moment after launch (once the sidecar reports it);
+  // until then we use a default WITHOUT caching, so we recover automatically.
+  if (port) {
+    cachedBase = `http://127.0.0.1:${port}`;
+    return cachedBase;
+  }
+  return "http://127.0.0.1:8765";
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(sidecarBase() + path, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!r.ok) {
-    let detail = r.statusText;
+  // The sidecar can take a few seconds to come up (and its port to be
+  // injected) right after launch. Retry transient network failures so the
+  // UI doesn't get stuck on "connection refused".
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 20; attempt++) {
     try {
-      const j = await r.json();
-      detail = j.detail ?? detail;
-    } catch { /* ignore */ }
-    throw new Error(`${r.status} ${detail}`);
+      const r = await fetch(sidecarBase() + path, {
+        headers: { "Content-Type": "application/json" },
+        ...init,
+      });
+      if (!r.ok) {
+        let detail = r.statusText;
+        try {
+          const j = await r.json();
+          detail = j.detail ?? detail;
+        } catch { /* ignore */ }
+        throw new Error(`${r.status} ${detail}`);
+      }
+      return r.json() as Promise<T>;
+    } catch (e) {
+      // An HTTP error (has a status) is real — don't retry it.
+      if (e instanceof Error && /^\d/.test(e.message)) throw e;
+      lastErr = e;
+      await sleep(500);
+    }
   }
-  return r.json() as Promise<T>;
+  throw lastErr;
 }
 
 // ---------- types ----------
