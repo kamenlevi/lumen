@@ -276,11 +276,13 @@ fn create_spotlight(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .inner_size(640.0, 80.0)
         .resizable(false)
         .decorations(false)
-        .transparent(true)
+        // Opaque, not transparent: GNOME's compositor handling of transparent
+        // undecorated windows left a black rectangle. A solid window with a
+        // matching page background looks clean and renders reliably.
+        .transparent(false)
         .always_on_top(true)
         .skip_taskbar(true)
         .visible(false)
-        .center()
         .build()
 }
 
@@ -297,7 +299,8 @@ fn position_spotlight(win: &WebviewWindow) {
         let mpos = m.position();
         if let Ok(wsize) = win.outer_size() {
             let x = mpos.x as f64 + (msize.width as f64 - wsize.width as f64) / 2.0;
-            let y = mpos.y as f64 + msize.height as f64 * 0.16;
+            // Horizontally centred, vertically a bit above the middle.
+            let y = mpos.y as f64 + (msize.height as f64 - wsize.height as f64) * 0.30;
             let _ = win.set_position(tauri::PhysicalPosition::new(x.max(0.0), y.max(0.0)));
         }
     }

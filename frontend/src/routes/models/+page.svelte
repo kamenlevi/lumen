@@ -32,23 +32,28 @@
     }
   }
 
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(async () => {
+      pull = await api.modelPullStatus();
+      if (pull.status === "done" || pull.status === "error") {
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = null;
+        if (pull.status === "done") {
+          const name = pull.name;
+          await load();
+          if (name) await select("ollama", name); // auto-select the new model
+        }
+      }
+    }, 1000);
+  }
+
   async function download(name: string) {
     err = null;
     try {
       await api.modelPull(name);
       pull = { name, status: "pulling", percent: 0, error: null };
-      pollTimer = setInterval(async () => {
-        pull = await api.modelPullStatus();
-        if (pull.status === "done" || pull.status === "error") {
-          if (pollTimer) clearInterval(pollTimer);
-          pollTimer = null;
-          if (pull.status === "done") {
-            await load();
-            // auto-select the freshly downloaded vision model
-            await select("ollama", name);
-          }
-        }
-      }, 1000);
+      startPolling();
     } catch (e) {
       err = (e as Error).message;
     }
@@ -80,7 +85,16 @@
     return "$" + c.toFixed(c < 0.01 ? 4 : 3);
   }
 
-  onMount(load);
+  onMount(async () => {
+    await load();
+    // A download started on a previous visit keeps running in the sidecar —
+    // pick its progress back up instead of looking like it was lost.
+    const ps = await api.modelPullStatus();
+    if (ps.status === "pulling") {
+      pull = ps;
+      startPolling();
+    }
+  });
   onDestroy(() => { if (pollTimer) clearInterval(pollTimer); });
 </script>
 

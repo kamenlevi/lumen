@@ -200,11 +200,8 @@
   .spotlight {
     height: 100%;
     width: 100%;
-    background: rgba(28, 28, 32, 0.92);
-    border-radius: 14px;
-    box-shadow:
-      0 30px 80px rgba(0, 0, 0, 0.55),
-      0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+    background: #15151a;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
     color: #f3f3f3;
     overflow: hidden;
     -webkit-font-smoothing: antialiased;

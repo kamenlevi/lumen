@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import { api, type PhotoDetail, type SearchResult } from "$lib/ipc";
@@ -11,15 +12,19 @@
     { prev: null, next: null, index: null, total: 0 }
   );
 
-  // zoom / pan state
-  let zoom = $state(1);
-  let panX = $state(0);
-  let panY = $state(0);
+  // ojo-style zoom: just two states — fit-to-window and 100% (actual pixels).
+  // No laggy continuous scaling. Pan by dragging when at 100%.
+  let mode = $state<"fit" | "actual">("fit");
+  let container: HTMLDivElement | null = $state(null);
+  let loaded = $state(false);
   let dragging = false;
-  let dragStart = { x: 0, y: 0, px: 0, py: 0 };
+  let drag = { x: 0, y: 0, sl: 0, st: 0 };
 
-  function resetView() {
-    zoom = 1; panX = 0; panY = 0;
+  function preload(id: number | null) {
+    if (id != null) {
+      const im = new Image();
+      im.src = api.photoFileUrl(id);
+    }
   }
 
   $effect(() => {
@@ -27,45 +32,63 @@
     if (!id) return;
     photo = null;
     similar = [];
-    resetView();
+    mode = "fit";
+    loaded = false;
     api.photo(id).then((p) => (photo = p)).catch((e) => (err = e.message));
-    api.photoSimilar(id, 24).then((r) => (similar = r.results)).catch((e) => (err = e.message));
-    api.photoNeighbors(id).then((n) => (nav = n)).catch(() => {});
+    api.photoSimilar(id, 24).then((r) => (similar = r.results)).catch(() => {});
+    api.photoNeighbors(id).then((n) => {
+      nav = n;
+      preload(n.prev); // neighbours preloaded → arrow nav is instant
+      preload(n.next);
+    }).catch(() => {});
   });
 
   function go(id: number | null) {
     if (id != null) goto(`/photo/${id}/`);
   }
 
-  function onWheel(e: WheelEvent) {
-    e.preventDefault();
-    const next = Math.min(6, Math.max(1, zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
-    if (next === 1) resetView();
-    zoom = next;
+  async function toggleZoom(e: MouseEvent) {
+    if (dragging) return;
+    if (mode === "fit") {
+      mode = "actual";
+      await tick();
+      if (container) {
+        // center the 100% view on where the user clicked
+        const img = container.querySelector("img.full") as HTMLImageElement | null;
+        if (img) {
+          const r = container.getBoundingClientRect();
+          const fx = (e.clientX - r.left) / r.width;
+          const fy = (e.clientY - r.top) / r.height;
+          container.scrollLeft = fx * (img.scrollWidth - r.width);
+          container.scrollTop = fy * (img.scrollHeight - r.height);
+        }
+      }
+    } else {
+      mode = "fit";
+    }
   }
-  function onDblClick() {
-    if (zoom > 1) resetView();
-    else zoom = 2.5;
-  }
+
   function onPointerDown(e: PointerEvent) {
-    if (zoom <= 1) return;
+    if (mode !== "actual" || !container) return;
     dragging = true;
-    dragStart = { x: e.clientX, y: e.clientY, px: panX, py: panY };
+    drag = { x: e.clientX, y: e.clientY, sl: container.scrollLeft, st: container.scrollTop };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }
   function onPointerMove(e: PointerEvent) {
-    if (!dragging) return;
-    panX = dragStart.px + (e.clientX - dragStart.x);
-    panY = dragStart.py + (e.clientY - dragStart.y);
+    if (!dragging || !container) return;
+    container.scrollLeft = drag.sl - (e.clientX - drag.x);
+    container.scrollTop = drag.st - (e.clientY - drag.y);
   }
-  function onPointerUp() { dragging = false; }
+  function onPointerUp() {
+    // small delay so the click that ends a drag doesn't also toggle zoom
+    setTimeout(() => (dragging = false), 0);
+  }
 
   function onKey(e: KeyboardEvent) {
     if (e.key === "ArrowRight") { e.preventDefault(); go(nav.next); }
     else if (e.key === "ArrowLeft") { e.preventDefault(); go(nav.prev); }
-    else if (e.key === "+" || e.key === "=") { zoom = Math.min(6, zoom * 1.25); }
-    else if (e.key === "-") { const z = zoom / 1.25; if (z <= 1) resetView(); else zoom = z; }
-    else if (e.key === "0" || e.key === "Escape") { resetView(); }
+    else if (e.key === " ") { e.preventDefault(); mode = mode === "fit" ? "actual" : "fit"; }
+    else if (e.key === "Escape") { mode = "fit"; }
   }
 
   function fmtCoord(lat: number | null, lon: number | null) {
@@ -84,35 +107,40 @@
   {#if photo}
     <div class="grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
       <div
-        class="relative flex h-[70vh] items-center justify-center overflow-hidden rounded-md bg-black ring-1 ring-neutral-800"
+        bind:this={container}
+        class="relative h-[72vh] rounded-md bg-black ring-1 ring-neutral-800 {mode === 'actual' ? 'overflow-auto' : 'overflow-hidden flex items-center justify-center'}"
         role="presentation"
-        onwheel={onWheel}
-        ondblclick={onDblClick}
+        onclick={toggleZoom}
         onpointerdown={onPointerDown}
         onpointermove={onPointerMove}
         onpointerup={onPointerUp}>
+        <!-- instant thumbnail placeholder under the full image -->
+        <img
+          src={api.photoThumbUrl(photo.id)}
+          alt=""
+          class="pointer-events-none absolute inset-0 m-auto max-h-full max-w-full object-contain blur-[1px] transition-opacity {loaded ? 'opacity-0' : 'opacity-100'}" />
         <img
           src={api.photoFileUrl(photo.id)}
           alt={photo.path}
           draggable="false"
-          class="max-h-full max-w-full select-none object-contain {zoom > 1 ? (dragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-zoom-in'}"
-          style="transform: translate({panX}px, {panY}px) scale({zoom}); transition: {dragging ? 'none' : 'transform 80ms ease-out'};" />
+          onload={() => (loaded = true)}
+          class="full select-none {mode === 'fit'
+            ? 'max-h-full max-w-full object-contain cursor-zoom-in'
+            : (dragging ? 'cursor-grabbing' : 'cursor-grab') + ' max-w-none'} {loaded ? 'opacity-100' : 'opacity-0'}" />
 
         {#if nav.prev != null}
-          <button onclick={() => go(nav.prev)} aria-label="Previous"
-            class="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/55 px-3 py-2 text-lg text-white hover:bg-black/80">‹</button>
+          <button onclick={(e) => { e.stopPropagation(); go(nav.prev); }} aria-label="Previous"
+            class="absolute left-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/55 px-3 py-2 text-lg text-white hover:bg-black/80">‹</button>
         {/if}
         {#if nav.next != null}
-          <button onclick={() => go(nav.next)} aria-label="Next"
-            class="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/55 px-3 py-2 text-lg text-white hover:bg-black/80">›</button>
+          <button onclick={(e) => { e.stopPropagation(); go(nav.next); }} aria-label="Next"
+            class="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/55 px-3 py-2 text-lg text-white hover:bg-black/80">›</button>
         {/if}
-
-        <div class="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded bg-black/60 px-2 py-0.5 text-[11px] text-neutral-300">
-          {#if nav.index}{nav.index} / {nav.total} · {/if}
-          {Math.round(zoom * 100)}%
-          {#if zoom > 1}<button class="pointer-events-auto ml-1 underline" onclick={resetView}>reset</button>{/if}
+        <div class="pointer-events-none absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded bg-black/60 px-2 py-0.5 text-[11px] text-neutral-300">
+          {#if nav.index}{nav.index} / {nav.total} · {/if}{mode === "fit" ? "fit — click to zoom" : "100% — click to fit"}
         </div>
       </div>
+
       <dl class="space-y-2 text-sm">
         <div>
           <dt class="text-xs uppercase tracking-wide text-neutral-500">Path</dt>
@@ -134,14 +162,6 @@
           <div>
             <dt class="text-xs uppercase tracking-wide text-neutral-500">GPS</dt>
             <dd class="font-mono text-xs">{fmtCoord(photo.lat, photo.lon)}</dd>
-          </div>
-          <div>
-            <dt class="text-xs uppercase tracking-wide text-neutral-500">pHash</dt>
-            <dd class="font-mono text-xs">{photo.phash ?? "—"}</dd>
-          </div>
-          <div>
-            <dt class="text-xs uppercase tracking-wide text-neutral-500">Indexed</dt>
-            <dd>{new Date(photo.indexed_at * 1000).toLocaleString()}</dd>
           </div>
         </div>
       </dl>

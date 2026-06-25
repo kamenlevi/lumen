@@ -11,11 +11,9 @@
   :global(html), :global(body), :global(.spotlight-root) {
     height: 100%;
     width: 100%;
-    background: transparent;
     overflow: hidden;
-  }
-  :global(body) {
-    /* Reset the main app's dark background — the spotlight floats. */
-    background: transparent !important;
+    /* Solid background matching the card — the spotlight window is opaque,
+       so this fills it edge-to-edge with no black gaps. */
+    background: #15151a !important;
   }
 </style>
