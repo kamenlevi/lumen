@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 from . import chat as chat_brain
 from . import clip_model, db
+from . import models as model_mgr
 from .index import IndexProgress, index_folder
 from .paths import app_data_dir, db_path, port_file
 from .prune import prune_all, prune_folder
@@ -92,6 +93,15 @@ class ChatRenameIn(BaseModel):
 
 class ChatMessageIn(BaseModel):
     text: str
+
+
+class ModelPullIn(BaseModel):
+    name: str
+
+
+class ModelSelectIn(BaseModel):
+    provider: str
+    model: str
 
 
 # ---------- endpoints ----------
@@ -319,6 +329,48 @@ def set_settings(body: SettingsIn) -> dict[str, Any]:
     if body.device:
         db.set_setting(conn, "device", body.device)
     return get_settings()
+
+
+# ---------- models ----------
+
+@app.get("/models")
+def models_overview() -> dict[str, Any]:
+    conn = db.connect()
+    hw = model_mgr.hardware_info()
+    installed = model_mgr.installed_models()
+    return {
+        "hardware": hw,
+        "ollama_up": model_mgr.ollama_up(),
+        "installed": installed,
+        "recommended": model_mgr.recommended(hw, installed),
+        "recommendation": model_mgr.recommendation(hw, installed),
+        "selected": model_mgr.get_selection(conn),
+    }
+
+
+@app.get("/models/cloud")
+def models_cloud() -> list[dict[str, Any]]:
+    return model_mgr.cloud_catalog()
+
+
+@app.post("/models/pull")
+def models_pull(body: ModelPullIn) -> dict[str, Any]:
+    if not model_mgr.ollama_up():
+        raise HTTPException(status_code=400, detail="Ollama isn't running (start it with `ollama serve`).")
+    model_mgr.start_pull(body.name)
+    return {"ok": True}
+
+
+@app.get("/models/pull/status")
+def models_pull_status() -> dict[str, Any]:
+    return model_mgr.pull_status()
+
+
+@app.post("/models/select")
+def models_select(body: ModelSelectIn) -> dict[str, Any]:
+    conn = db.connect()
+    model_mgr.set_selection(conn, body.provider, body.model)
+    return model_mgr.get_selection(conn)
 
 
 # ---------- chat ----------

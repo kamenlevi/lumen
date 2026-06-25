@@ -118,6 +118,44 @@ export interface ChatMessage {
   results: SearchResult[];
 }
 
+export interface ModelInfo {
+  name: string;
+  size_gb?: number;
+  vision?: boolean;
+  installed?: boolean;
+  min_ram_gb?: number;
+  fits_ram?: boolean;
+  blurb?: string;
+}
+
+export interface CloudModel {
+  id: string;
+  name: string;
+  in: number;
+  out: number;
+}
+
+export interface ModelsOverview {
+  hardware: {
+    cores: number;
+    ram_total_gb: number | null;
+    ram_available_gb: number | null;
+    gpu: string | null;
+  };
+  ollama_up: boolean;
+  installed: ModelInfo[];
+  recommended: ModelInfo[];
+  recommendation: { provider: string; model: string; why: string };
+  selected: { provider: string; model: string };
+}
+
+export interface PullStatus {
+  name: string | null;
+  status: string;
+  percent: number;
+  error: string | null;
+}
+
 export interface Settings {
   model_name: string;
   pretrained: string;
@@ -187,6 +225,18 @@ export const api = {
   getSettings: () => req<Settings>("/settings"),
   setSettings: (s: Partial<Settings>) =>
     req<Settings>("/settings", { method: "POST", body: JSON.stringify(s) }),
+
+  // ---------- models ----------
+  modelsOverview: () => req<ModelsOverview>("/models"),
+  modelsCloud: () => req<CloudModel[]>("/models/cloud"),
+  modelPull: (name: string) =>
+    req<{ ok: boolean }>("/models/pull", { method: "POST", body: JSON.stringify({ name }) }),
+  modelPullStatus: () => req<PullStatus>("/models/pull/status"),
+  modelSelect: (provider: string, model: string) =>
+    req<{ provider: string; model: string }>("/models/select", {
+      method: "POST",
+      body: JSON.stringify({ provider, model }),
+    }),
 
   // ---------- chat ----------
   listChats: () => req<Chat[]>("/chats"),
