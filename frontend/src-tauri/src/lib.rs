@@ -271,7 +271,10 @@ fn existing_sidecar_port() -> Option<u16> {
 // ---------- windows ----------
 
 fn create_spotlight(app: &AppHandle) -> tauri::Result<WebviewWindow> {
-    WebviewWindowBuilder::new(app, "spotlight", WebviewUrl::App("spotlight/".into()))
+    // Load the SPA root (index.html); the frontend routes to the spotlight
+    // view based on this window's label. Requesting "spotlight/" directly 404s
+    // in the static build (only index.html is emitted).
+    WebviewWindowBuilder::new(app, "spotlight", WebviewUrl::App("index.html".into()))
         .title("Lumen")
         .inner_size(640.0, 80.0)
         .resizable(false)
