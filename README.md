@@ -236,8 +236,9 @@ Built step by step, each step a working app:
 - [ ] **Step 3 — Instant quality filters.** UI chips: *blurry*, *dark*, *out-of-focus subject*, *eyes closed* — pure filters over cached metrics, no model calls.
 - [ ] **Step 4 — Model picker.** Local (Ollama/downloadable, quantization choice) + cloud (OpenRouter/Groq) with live cost estimates; hardware scan + auto-recommend (ported from `excel-ai-assistant`).
 - [ ] **Step 5 — Tier 3 VLM.** Per-image inspection tool, local or cloud per the picker.
-- [~] **Chat surface — built early.** A dedicated split-view chat (`/chat`): conversation on the left, results gallery on the right, history that persists across sessions (`chats` / `chat_messages` tables), inline photo results. The answering "brain" (`sidecar/chat.py`) is a swappable seam — currently it does semantic search; Steps 4–6 plug Tiers 2–3 and multi-turn reasoning into it without changing the UI or storage.
-- [ ] **Step 6 — Chat assistant brain.** Make `chat.py` a real agent that uses Tiers 1–3 as tools ("are all my portraits in focus?" → searches, scores, verifies, reports with thumbnails).
+- [~] **Chat surface + quality-aware brain.** Split-view chat (`/chat`) with persistent history. `chat.py` understands Tier-2 quality intents ("blurry / sharp / dark / out-of-focus subject") and answers by filtering the metrics (combined with CLIP for content), with honest counts. Every result tile shows a quality badge + sharpness score, so answers are verifiable by eye. Still a heuristic, not yet a full LLM agent.
+- [x] **Step 3 — Quality visible & verifiable.** Tier-2 metrics surfaced in `SearchResult` + chat results; `ResultGrid` badges (blurry/soft subject/dark/bright/sharp). Quality pass run on the library.
+- [ ] **Step 6 — Real chat agent.** Replace the heuristic in `chat.py` with an LLM that uses Tiers 1–3 as tools and reasons across turns ("are all my portraits in focus?" → search, score, VLM-verify, report).
 
 ## Non-goals (v1)
 
