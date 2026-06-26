@@ -18,7 +18,9 @@ from .search import (
     COLOR_BINS,
     QUALITY_FILTERS,
     SearchResult,
+    detect_object_label,
     search_by_color,
+    search_by_object,
     search_by_quality,
     search_descriptions,
     search_text,
@@ -124,13 +126,17 @@ def respond(
     if color:
         return _answer_color(conn, query, color)
 
-    # Plain search: CLIP (semantic) + any photos whose AI description matches
-    # (exact content the vision model saw). Description hits first, then CLIP.
-    clip = search_text(query, top_k=DEFAULT_RESULT_K)
+    # Plain search, best signal first:
+    #  1. object detector found it (definitive — "person", "car", "dog"…)
+    #  2. an AI description mentions it
+    #  3. CLIP semantic similarity (everything else)
+    obj_label = detect_object_label(query)
+    objs = search_by_object(obj_label, top_k=DEFAULT_RESULT_K) if obj_label else []
     desc = search_descriptions(query, top_k=DEFAULT_RESULT_K)
+    clip = search_text(query, top_k=DEFAULT_RESULT_K)
     seen: set[int] = set()
     merged: list[SearchResult] = []
-    for r in desc + clip:
+    for r in objs + desc + clip:
         if r.id not in seen:
             seen.add(r.id)
             merged.append(r)
@@ -141,7 +147,12 @@ def respond(
             "is indexed in the Library tab, or try describing it differently.",
             [],
         )
-    note = f" — {len(desc)} matched an AI description" if desc else ""
+    bits = []
+    if objs:
+        bits.append(f"{len(objs)} where I detected a {obj_label}")
+    if desc:
+        bits.append(f"{len(desc)} from AI descriptions")
+    note = (" — " + ", ".join(bits)) if bits else ""
     return (f"Here are {len(merged)} photos matching “{query}”{note}.", _refs(merged))
 
 

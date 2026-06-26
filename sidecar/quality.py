@@ -204,6 +204,7 @@ def analyze(img: Image.Image, fnumber: float | None = None) -> dict:
     any_closed = any(f["eyes_closed"] for f in flist)
     main = max(flist, key=lambda f: f["area_frac"], default=None)
     subj = det["subject"]
+    obj_labels = ",".join(sorted({o["label"] for o in det["objects"]})) or None
 
     return {
         "sharpness": round(sharpness, 2),
@@ -226,6 +227,7 @@ def analyze(img: Image.Image, fnumber: float | None = None) -> dict:
         "face_sharp": main["face_sharp"] if main else None,
         "subject_label": subj["label"] if subj else None,
         "subject_obj_sharp": subj["sharp"] if subj else None,
+        "objects": obj_labels,
         "analyzed_at": time.time(),
     }
 

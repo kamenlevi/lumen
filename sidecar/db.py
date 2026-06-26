@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS quality_metrics (
     face_sharp REAL,            -- sharpness measured on the main face
     subject_label TEXT,         -- main detected object (person/car/dog/…)
     subject_obj_sharp REAL,     -- sharpness measured ON that subject (not the frame)
+    objects TEXT,               -- all detected object labels, comma-separated
     analyzed_at REAL NOT NULL
 );
 
@@ -151,6 +152,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("num_faces", "INTEGER"), ("eyes_closed", "INTEGER"),
         ("eyes_open_all", "INTEGER"), ("eye_sharp", "REAL"), ("face_sharp", "REAL"),
         ("subject_label", "TEXT"), ("subject_obj_sharp", "REAL"),
+        ("objects", "TEXT"),
     ]
     existing = {r["name"] for r in conn.execute("PRAGMA table_info(quality_metrics)")}
     for name, typ in cols:
@@ -188,7 +190,7 @@ QUALITY_COLS = (
     "subject_sharpness", "background_sharpness", "focus_ratio", "fnumber",
     "is_blurry", "is_dark", "is_bright", "subject_out_of_focus",
     "num_faces", "eyes_closed", "eyes_open_all", "eye_sharp", "face_sharp",
-    "subject_label", "subject_obj_sharp",
+    "subject_label", "subject_obj_sharp", "objects",
     "analyzed_at",
 )
 

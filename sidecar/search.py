@@ -241,6 +241,66 @@ def search_by_color(
     return [_row_to_result(r, round(s, 4)) for s, r in scored[:max(1, min(top_k, 500))]]
 
 
+# Words that map to an object the detector knows (COCO classes). Searching
+# these is far more reliable than CLIP — the detector definitively found them.
+COCO_SYNONYMS: dict[str, str] = {
+    "person": "person", "people": "person", "man": "person", "men": "person",
+    "woman": "person", "women": "person", "human": "person", "humans": "person",
+    "portrait": "person", "portraits": "person", "someone": "person", "guy": "person",
+    "car": "car", "cars": "car", "bike": "bicycle", "bikes": "bicycle",
+    "bicycle": "bicycle", "bicycles": "bicycle", "cyclist": "bicycle",
+    "motorcycle": "motorcycle", "motorbike": "motorcycle", "bus": "bus",
+    "train": "train", "truck": "truck", "boat": "boat", "boats": "boat",
+    "plane": "airplane", "airplane": "airplane", "dog": "dog", "dogs": "dog",
+    "puppy": "dog", "cat": "cat", "cats": "cat", "bird": "bird", "birds": "bird",
+    "horse": "horse", "horses": "horse", "sheep": "sheep", "cow": "cow",
+    "bear": "bear", "elephant": "elephant", "chair": "chair", "couch": "couch",
+    "sofa": "couch", "bed": "bed", "tv": "tv", "television": "tv",
+    "laptop": "laptop", "phone": "cell phone", "cellphone": "cell phone",
+    "book": "book", "books": "book", "bottle": "bottle", "cup": "cup",
+    "pizza": "pizza", "cake": "cake", "wine": "wine glass", "umbrella": "umbrella",
+    "backpack": "backpack", "skateboard": "skateboard", "surfboard": "surfboard",
+    "skis": "skis", "snowboard": "snowboard", "kite": "kite", "boat ": "boat",
+}
+
+
+def detect_object_label(text: str) -> str | None:
+    """If the query names a known detectable object, return its COCO label."""
+    words = re.findall(r"[a-z]+", text.lower())
+    for w in words:
+        if w in COCO_SYNONYMS:
+            return COCO_SYNONYMS[w]
+    return None
+
+
+def search_by_object(label: str, *, top_k: int = 50,
+                     candidate_ids: list[int] | None = None) -> list[SearchResult]:
+    """Photos where the object detector found `label`. Ranked by how big/sharp
+    that subject is (a clear, close subject first)."""
+    conn = db.connect()
+    where = "q.objects LIKE ?"
+    params: list[Any] = [f"%{label}%"]
+    if candidate_ids is not None:
+        if not candidate_ids:
+            return []
+        where += f" AND images.id IN ({','.join('?' * len(candidate_ids))})"
+        params.extend(candidate_ids)
+    params.append(max(1, min(int(top_k), 500)))
+    rows = conn.execute(f"""
+        SELECT images.id, images.path, images.thumb_path, images.w, images.h,
+               images.taken_at, images.camera, images.lat, images.lon,
+               q.sharpness, q.is_blurry, q.is_dark, q.is_bright, q.subject_out_of_focus,
+               q.num_faces, q.eyes_closed, cm.dominant_hex
+          FROM images
+          JOIN quality_metrics q ON q.image_id = images.id
+     LEFT JOIN color_metrics cm ON cm.image_id = images.id
+         WHERE {where}
+         ORDER BY COALESCE(q.subject_obj_sharp, q.sharpness) DESC
+         LIMIT ?
+    """, params).fetchall()
+    return [_row_to_result(r, 1.0) for r in rows]
+
+
 def search_descriptions(query: str, *, top_k: int = 50) -> list[SearchResult]:
     """Keyword search over the VLM-generated descriptions (vlm_cards). Lets the
     chat find photos by content the model saw — text on a sign, a specific
