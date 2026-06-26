@@ -27,7 +27,7 @@
       <button
         type="button"
         on:click={() => open(r)}
-        class="group relative aspect-square overflow-hidden rounded-md bg-neutral-900 ring-1 ring-neutral-800 hover:ring-neutral-600">
+        class="group relative aspect-square overflow-hidden rounded-md bg-neutral-900 {r.keeper === true ? 'ring-2 ring-amber-400' : r.keeper === false ? 'opacity-60 ring-1 ring-neutral-800 hover:opacity-100' : 'ring-1 ring-neutral-800 hover:ring-neutral-600'}">
         <img
           src={api.photoThumbUrl(r.id)}
           alt={r.path}
@@ -37,6 +37,9 @@
           <span class="absolute left-1.5 top-1.5 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-mono text-neutral-200">
             {r.score.toFixed(2)}
           </span>
+        {/if}
+        {#if r.keeper === true}
+          <span class="absolute left-1/2 top-1.5 z-10 -translate-x-1/2 rounded bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-black">★ best</span>
         {/if}
         {#if quality(r)}
           {@const q = quality(r)}

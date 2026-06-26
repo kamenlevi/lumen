@@ -339,5 +339,7 @@ def hydrate_results(conn: sqlite3.Connection, results_json: str | None) -> list[
         if row:
             d = dict(row)
             d["score"] = ref.get("score", 0.0)
+            if "keeper" in ref:
+                d["keeper"] = ref["keeper"]
             out.append(d)
     return out

@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import sqlite3
 
+from . import bursts as bursts_mod
 from . import db
 from .search import (
     COLOR_BINS,
@@ -111,6 +112,10 @@ def respond(
     if not query:
         return ("What would you like to find or know about your photos?", [])
 
+    if re.search(r"\bburst|keeper|best (shot|photo|one|of)|near[- ]identical|duplicate|"
+                 r"pick the best|which (one )?is best|similar shots|cull\b", query.lower()):
+        return _answer_bursts(conn)
+
     quality = _detect_quality(query)
     if quality:
         return _answer_quality(conn, query, quality)
@@ -138,6 +143,27 @@ def respond(
         )
     note = f" — {len(desc)} matched an AI description" if desc else ""
     return (f"Here are {len(merged)} photos matching “{query}”{note}.", _refs(merged))
+
+
+def _answer_bursts(conn: sqlite3.Connection) -> tuple[str, list[dict]]:
+    bursts = bursts_mod.find_bursts(conn, limit_bursts=25)
+    if not bursts:
+        return (
+            "I didn’t find any bursts — groups of near-identical shots taken a few "
+            "seconds apart. (They need capture timestamps + visual similarity.)",
+            [],
+        )
+    refs: list[dict] = []
+    for burst in bursts:
+        for p in burst:
+            refs.append({"id": p["id"], "score": p["score"], "keeper": p["is_keeper"]})
+    total_shots = sum(len(b) for b in bursts)
+    return (
+        f"Found {len(bursts)} burst{'s' if len(bursts) != 1 else ''} "
+        f"({total_shots} shots). The recommended keeper in each is starred ★ — "
+        f"the rest are near-duplicates you can cull.",
+        refs,
+    )
 
 
 def _answer_color(

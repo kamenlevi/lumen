@@ -92,6 +92,7 @@ export interface SearchResult {
   is_bright?: number | null;
   subject_out_of_focus?: number | null;
   dominant_hex?: string | null;
+  keeper?: boolean;
 }
 
 export interface PhotoDetail {
