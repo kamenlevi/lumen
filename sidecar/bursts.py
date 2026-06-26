@@ -15,8 +15,9 @@ from datetime import datetime
 
 from . import db
 
-TIME_GAP_S = 4.0   # consecutive shots within this many seconds can be a burst
-PHASH_MAX = 10     # max perceptual-hash Hamming distance to count as "near-identical"
+RAPID_GAP_S = 3.5  # shots this close in time ARE the same burst (rapid fire)
+TIME_GAP_S = 6.0   # up to here, group only if also visually similar
+PHASH_MAX = 14     # perceptual-hash Hamming distance for "visually similar"
 MIN_BURST = 2
 
 
@@ -41,12 +42,16 @@ def _epoch(taken_at: str | None) -> float | None:
 def _same_burst(a: sqlite3.Row, b: sqlite3.Row) -> bool:
     if a["folder_id"] != b["folder_id"]:
         return False
-    if _phash_hamming(a["phash"], b["phash"]) > PHASH_MAX:
-        return False
     ta, tb = _epoch(a["taken_at"]), _epoch(b["taken_at"])
     if ta is not None and tb is not None:
-        return abs(tb - ta) <= TIME_GAP_S
-    return True  # no timestamps → rely on near-identical look + adjacency
+        gap = abs(tb - ta)
+        if gap > TIME_GAP_S:
+            return False
+        if gap <= RAPID_GAP_S:
+            return True  # rapid succession is a burst even if the framing shifted
+        return _phash_hamming(a["phash"], b["phash"]) <= PHASH_MAX
+    # No timestamps → fall back to visual similarity + adjacency.
+    return _phash_hamming(a["phash"], b["phash"]) <= PHASH_MAX
 
 
 def _score(q: sqlite3.Row | None) -> float:
