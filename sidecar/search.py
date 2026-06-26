@@ -63,6 +63,10 @@ QUALITY_FILTERS: dict[str, str] = {
     "dark": "q.is_dark = 1",
     "bright": "q.is_bright = 1",
     "out_of_focus": "q.subject_out_of_focus = 1",
+    "eyes_closed": "q.eyes_closed = 1",
+    "eyes_open": "q.eyes_open_all = 1",
+    "has_faces": "q.num_faces > 0",
+    "soft_eyes": "q.num_faces > 0 AND q.eye_sharp IS NOT NULL AND q.eye_sharp < q.sharpness * 0.6",
 }
 
 # How to order each quality query so the most relevant land first.
@@ -72,6 +76,10 @@ QUALITY_ORDER: dict[str, str] = {
     "dark": "q.brightness ASC",
     "bright": "q.brightness DESC",
     "out_of_focus": "q.focus_ratio ASC",
+    "eyes_closed": "q.num_faces DESC",
+    "eyes_open": "q.num_faces DESC",
+    "has_faces": "q.num_faces DESC",
+    "soft_eyes": "q.eye_sharp ASC",
 }
 
 

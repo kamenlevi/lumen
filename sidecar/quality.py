@@ -33,6 +33,7 @@ import cv2
 import numpy as np
 from PIL import Image, ExifTags
 
+from . import faces as face_mod
 from . import thumb
 
 # ── Tuning thresholds ─────────────────────────────────────────────────────────
@@ -109,16 +110,15 @@ def _fnumber(path: Path) -> float | None:
     return None
 
 
-def _to_gray_normalized(img: Image.Image) -> np.ndarray:
-    """RGB PIL → grayscale numpy, longest side scaled to NORM_SIDE."""
-    arr = np.asarray(img, dtype=np.uint8)
-    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-    h, w = gray.shape
+def _normalize(img: Image.Image) -> tuple[np.ndarray, np.ndarray]:
+    """RGB PIL → (rgb, gray) numpy arrays, longest side scaled to NORM_SIDE."""
+    arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    h, w = arr.shape[:2]
     scale = NORM_SIDE / max(h, w)
     if scale < 1.0:
-        gray = cv2.resize(gray, (int(w * scale), int(h * scale)),
-                          interpolation=cv2.INTER_AREA)
-    return gray
+        arr = cv2.resize(arr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    return arr, gray
 
 
 def _detect_subject(gray: np.ndarray) -> tuple[tuple[int, int, int, int], str]:
@@ -162,7 +162,7 @@ def _region_var(lap: np.ndarray, box: tuple[int, int, int, int]) -> tuple[float,
 def analyze(img: Image.Image, fnumber: float | None = None) -> dict:
     """Compute all Tier-2 metrics for an already-loaded RGB image.
     Returns a dict matching the quality_metrics columns."""
-    gray = _to_gray_normalized(img)
+    rgb, gray = _normalize(img)
     lap = cv2.Laplacian(gray, cv2.CV_64F)
 
     sharpness = float(lap.var())
@@ -196,6 +196,12 @@ def analyze(img: Image.Image, fnumber: float | None = None) -> dict:
     ):
         subject_oof = True
 
+    # Reliable face/eye checks via MediaPipe (blink, eyes-closed, eye sharpness).
+    flist = face_mod.analyze_faces(rgb, gray)
+    num_faces = len(flist)
+    any_closed = any(f["eyes_closed"] for f in flist)
+    main = max(flist, key=lambda f: f["area_frac"], default=None)
+
     return {
         "sharpness": round(sharpness, 2),
         "brightness": round(brightness, 2),
@@ -210,6 +216,11 @@ def analyze(img: Image.Image, fnumber: float | None = None) -> dict:
         "is_dark": int(is_dark),
         "is_bright": int(is_bright),
         "subject_out_of_focus": int(subject_oof),
+        "num_faces": num_faces,
+        "eyes_closed": int(any_closed),
+        "eyes_open_all": int(num_faces > 0 and not any_closed),
+        "eye_sharp": main["eye_sharp"] if main else None,
+        "face_sharp": main["face_sharp"] if main else None,
         "analyzed_at": time.time(),
     }
 

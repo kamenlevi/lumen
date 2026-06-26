@@ -35,9 +35,17 @@ CONTENT_CANDIDATE_K = 200
 # Phrases that signal a quality intent → (flag, human label). Multi-word
 # phrases are checked first so "out of focus" wins over "focus".
 _QUALITY_PHRASES: list[tuple[str, str, str]] = [
+    (r"eyes (are |is )?(closed|shut)|closed eyes|shut eyes|blink(ed|ing)?|someone blinked|who blinked",
+     "eyes_closed", "closed eyes"),
+    (r"everyone.{0,15}eyes open|all eyes open|everyone.{0,15}looking|nobody blinked|eyes open",
+     "eyes_open", "everyone's eyes open"),
+    (r"soft eyes|eyes (are )?(not sharp|blurry|soft|out of focus)|blurry eyes|eyes not in focus",
+     "soft_eyes", "soft / unsharp eyes"),
+    (r"\b(faces|portraits?|people|persons?|headshots?)\b",
+     "has_faces", "people"),
     (r"subject.{0,20}out of focus|out of focus.{0,20}subject|missed focus|"
      r"focus on the background|background (is )?in focus",
-     "out_of_focus", "out of focus on the subject"),
+     "out_of_focus", "subject out of focus"),
     (r"out[- ]of[- ]focus|blurry|blurred|\bblur\b|not sharp|soft focus|motion blur",
      "blurry", "blurry"),
     (r"\bsharp(est)?\b|in focus|crisp|tack sharp", "sharp", "sharp"),
@@ -78,7 +86,9 @@ def _residual_content(text: str, extra_words: list[str] | None = None) -> str:
     for word in extra_words or []:
         low = re.sub(rf"\b{re.escape(word)}\b", " ", low, flags=re.IGNORECASE)
     # drop filler so a bare "blurry photos" leaves nothing to CLIP-search
-    low = re.sub(r"\b(photos?|pictures?|images?|shots?|subjects?|colou?red?|of|my|the|all|show|me|find|with|that|are|is|which|ones?)\b",
+    low = re.sub(r"\b(photos?|pictures?|images?|shots?|subjects?|colou?red?|eyes?|open|closed|everyone|"
+                 r"looking|faces?|people|persons?|portraits?|headshots?|soft|where|whose|who|"
+                 r"of|my|the|all|show|me|find|with|that|are|is|which|ones?)\b",
                  " ", low, flags=re.IGNORECASE)
     return " ".join(low.split())
 
@@ -188,13 +198,12 @@ def _answer_quality(
         results = search_by_quality(flag, top_k=DEFAULT_RESULT_K, candidate_ids=cand_ids)
         if not results:
             return (
-                f"None of the photos matching “{content}” look {label}. "
-                f"(Checked {len(cand_ids)} content matches against the quality metrics.)",
+                f"None of the photos matching “{content}” have {label}. "
+                f"(Checked {len(cand_ids)} content matches.)",
                 [],
             )
         return (
-            f"Of your photos matching “{content}”, {len(results)} are {label} — "
-            f"sorted by how {label} they are. Each tile shows its score so you can verify.",
+            f"Of your photos matching “{content}” — {len(results)} with {label}.",
             _refs(results),
         )
 
@@ -204,12 +213,11 @@ def _answer_quality(
         f"SELECT COUNT(*) AS n FROM quality_metrics q WHERE {QUALITY_FILTERS[flag]}"
     ).fetchone()["n"]
     if not results:
-        return (f"I didn’t find any {label} photos in your library.", [])
+        return (f"No photos found with {label}.", [])
     shown = len(results)
-    more = f", showing the strongest {shown}" if total > shown else ""
+    more = f" (showing the strongest {shown})" if total > shown else ""
     return (
-        f"{total} photo{'s' if total != 1 else ''} in your library "
-        f"{'are' if total != 1 else 'is'} {label}{more}. Each tile shows its "
-        f"sharpness score so you can check my work.",
+        f"Found {total} photo{'s' if total != 1 else ''} — {label}{more}. "
+        f"Each tile shows its scores so you can check my work.",
         _refs(results),
     )

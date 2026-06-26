@@ -62,6 +62,12 @@ CREATE TABLE IF NOT EXISTS quality_metrics (
     is_dark INTEGER NOT NULL DEFAULT 0,
     is_bright INTEGER NOT NULL DEFAULT 0,
     subject_out_of_focus INTEGER NOT NULL DEFAULT 0,
+    -- MediaPipe face/eye analysis (Tier-2b)
+    num_faces INTEGER,
+    eyes_closed INTEGER,        -- any face has a shut eye
+    eyes_open_all INTEGER,      -- faces present and all eyes open
+    eye_sharp REAL,             -- sharpness measured on the eye region
+    face_sharp REAL,            -- sharpness measured on the main face
     analyzed_at REAL NOT NULL
 );
 
@@ -132,8 +138,21 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the table already existed in the wild."""
+    cols = [
+        ("num_faces", "INTEGER"), ("eyes_closed", "INTEGER"),
+        ("eyes_open_all", "INTEGER"), ("eye_sharp", "REAL"), ("face_sharp", "REAL"),
+    ]
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(quality_metrics)")}
+    for name, typ in cols:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE quality_metrics ADD COLUMN {name} {typ}")
 
 
 def init_db(conn: sqlite3.Connection, embedding_dim: int) -> None:
@@ -164,7 +183,9 @@ def pack_embedding(values: Iterable[float]) -> bytes:
 QUALITY_COLS = (
     "sharpness", "brightness", "clip_low", "clip_high", "subject_source",
     "subject_sharpness", "background_sharpness", "focus_ratio", "fnumber",
-    "is_blurry", "is_dark", "is_bright", "subject_out_of_focus", "analyzed_at",
+    "is_blurry", "is_dark", "is_bright", "subject_out_of_focus",
+    "num_faces", "eyes_closed", "eyes_open_all", "eye_sharp", "face_sharp",
+    "analyzed_at",
 )
 
 
