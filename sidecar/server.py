@@ -152,12 +152,20 @@ def add_folder(body: FolderIn) -> dict[str, Any]:
     conn = db.connect()
     bundle = clip_model.get_model()
     db.init_db(conn, bundle.dim)
+    # Auto-enable watch so the folder stays in sync (adds/edits/moves/deletes)
+    # without the user having to do anything.
     conn.execute(
-        "INSERT INTO folders(path, added_at) VALUES(?, ?) ON CONFLICT(path) DO NOTHING",
+        "INSERT INTO folders(path, added_at, watch) VALUES(?, ?, 1) "
+        "ON CONFLICT(path) DO UPDATE SET watch = 1",
         (str(root), time.time()),
     )
     conn.commit()
-    return {"ok": True, "path": str(root)}
+    row = conn.execute("SELECT id FROM folders WHERE path = ?", (str(root),)).fetchone()
+    try:
+        watcher_manager().start(row["id"], root)
+    except Exception as e:
+        print(f"[server] watcher start failed for {root}: {e}", flush=True)
+    return {"ok": True, "path": str(root), "watch": True}
 
 
 @app.delete("/library/folders")

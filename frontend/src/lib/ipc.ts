@@ -122,6 +122,7 @@ export interface IndexProgress {
   done: boolean;
   started_at: number;
   error: string | null;
+  phase?: string;
 }
 
 export interface Chat {

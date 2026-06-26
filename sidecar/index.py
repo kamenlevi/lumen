@@ -51,6 +51,8 @@ class IndexProgress:
     done: bool = False
     started_at: float = field(default_factory=time.time)
     error: str | None = None
+    # "queued" | "scanning" | "loading model" | "indexing" | "done"
+    phase: str = "queued"
 
     def snapshot(self) -> dict:
         return {
@@ -65,6 +67,7 @@ class IndexProgress:
             "done": self.done,
             "started_at": self.started_at,
             "error": self.error,
+            "phase": self.phase,
         }
 
 
@@ -332,6 +335,11 @@ def index_folder(
     device: str | None = None,
 ) -> IndexProgress:
     progress = progress or IndexProgress()
+    # Surface a "loading model" phase up front — on a slow CPU the first model
+    # load takes 10-30s, during which the bar would otherwise sit frozen at 0.
+    progress.phase = "loading model"
+    if on_progress:
+        on_progress(progress)
     bundle = clip_model.get_model(model_name, pretrained, device)
     conn = db.connect()
     db.init_db(conn, bundle.dim)
@@ -341,8 +349,12 @@ def index_folder(
 
     folder_id = _upsert_folder(conn, root)
 
+    progress.phase = "scanning"
+    if on_progress:
+        on_progress(progress)
     files = list(_walk(root))
     progress.total = len(files)
+    progress.phase = "indexing"
     if on_progress:
         on_progress(progress)
 
@@ -362,6 +374,7 @@ def index_folder(
     progress.pruned += prune_folder(folder_id)
 
     progress.done = True
+    progress.phase = "done"
     progress.current_path = None
     if on_progress:
         on_progress(progress)

@@ -151,11 +151,13 @@
         {#if p && !p.done}
           <div class="mt-2">
             <div class="h-1.5 w-full overflow-hidden rounded bg-neutral-800">
-              <div class="h-full bg-indigo-500 transition-[width]" style="width: {pct(p)}%"></div>
+              <div class="h-full bg-indigo-500 transition-[width] {p.phase && p.phase !== 'indexing' ? 'animate-pulse' : ''}" style="width: {p.phase === 'indexing' ? pct(p) : 5}%"></div>
             </div>
             <div class="mt-1 flex justify-between text-[11px] text-neutral-500">
               <span>
-                {p.indexed} indexed · {p.moved} moved · {p.skipped} skipped · {p.failed} failed
+                {#if p.phase === 'loading model'}Loading AI model… (first time can take ~30s)
+                {:else if p.phase === 'scanning'}Scanning folder…
+                {:else}{p.indexed} indexed · {p.moved} moved · {p.skipped} skipped · {p.failed} failed{/if}
               </span>
               <span>{p.seen}/{p.total}</span>
             </div>
