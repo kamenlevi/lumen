@@ -196,11 +196,14 @@ def analyze(img: Image.Image, fnumber: float | None = None) -> dict:
     ):
         subject_oof = True
 
-    # Reliable face/eye checks via MediaPipe (blink, eyes-closed, eye sharpness).
-    flist = face_mod.analyze_faces(rgb, gray)
+    # Subject-aware analysis: object detection → faces (via person crops) +
+    # subject sharpness measured on the detected subject, not the whole frame.
+    det = face_mod.analyze(rgb, gray)
+    flist = det["faces"]
     num_faces = len(flist)
     any_closed = any(f["eyes_closed"] for f in flist)
     main = max(flist, key=lambda f: f["area_frac"], default=None)
+    subj = det["subject"]
 
     return {
         "sharpness": round(sharpness, 2),
@@ -221,6 +224,8 @@ def analyze(img: Image.Image, fnumber: float | None = None) -> dict:
         "eyes_open_all": int(num_faces > 0 and not any_closed),
         "eye_sharp": main["eye_sharp"] if main else None,
         "face_sharp": main["face_sharp"] if main else None,
+        "subject_label": subj["label"] if subj else None,
+        "subject_obj_sharp": subj["sharp"] if subj else None,
         "analyzed_at": time.time(),
     }
 
