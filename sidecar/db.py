@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS images (
     lat REAL,
     lon REAL,
     phash TEXT,
+    sha256 TEXT,
     thumb_path TEXT,
     indexed_at REAL NOT NULL
 );
@@ -159,6 +160,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if name not in existing:
             conn.execute(f"ALTER TABLE quality_metrics ADD COLUMN {name} {typ}")
 
+    # images.sha256: exact-content hash, added after launch. The column lives
+    # here (not in SCHEMA) because the index must be created only AFTER the
+    # column exists — fresh DBs already have the column from CREATE TABLE, so
+    # the index creation is unconditional while the ALTER is guarded.
+    img_cols = {r["name"] for r in conn.execute("PRAGMA table_info(images)")}
+    if "sha256" not in img_cols:
+        conn.execute("ALTER TABLE images ADD COLUMN sha256 TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS images_sha256_idx ON images(sha256)")
+
 
 def init_db(conn: sqlite3.Connection, embedding_dim: int) -> None:
     conn.executescript(SCHEMA)
@@ -213,6 +223,29 @@ def get_quality(conn: sqlite3.Connection, image_id: int) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM quality_metrics WHERE image_id = ?", (image_id,)
     ).fetchone()
+
+
+def find_duplicate_groups(conn: sqlite3.Connection) -> list[list[sqlite3.Row]]:
+    """Group images whose file content is byte-identical (same SHA-256).
+    Returns one list per duplicated hash, newest path first; singletons are
+    excluded. Lets the UI say 'this exact file exists 3 times'."""
+    dup_hashes = [
+        r["sha256"]
+        for r in conn.execute(
+            """SELECT sha256 FROM images
+                WHERE sha256 IS NOT NULL AND sha256 != ''
+             GROUP BY sha256 HAVING COUNT(*) > 1"""
+        )
+    ]
+    groups: list[list[sqlite3.Row]] = []
+    for h in dup_hashes:
+        rows = conn.execute(
+            """SELECT id, path, thumb_path, w, h, taken_at, indexed_at, sha256
+                 FROM images WHERE sha256 = ? ORDER BY indexed_at DESC""",
+            (h,),
+        ).fetchall()
+        groups.append(rows)
+    return groups
 
 
 def get_vlm_card(conn: sqlite3.Connection, image_id: int) -> sqlite3.Row | None:

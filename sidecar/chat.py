@@ -114,6 +114,13 @@ def respond(
     if not query:
         return ("What would you like to find or know about your photos?", [])
 
+    # Exact duplicates (byte-identical files) — distinct from bursts, which are
+    # near-identical *different* frames. Route explicit "same/identical file"
+    # language here; generic "duplicate" still means burst/cull below.
+    if re.search(r"exact (duplicate|cop)|duplicate file|same file|identical (file|cop|photo|image)|"
+                 r"byte[- ]identical|same exact|copies of the same", query.lower()):
+        return _answer_exact_duplicates(conn)
+
     if re.search(r"\bburst|keeper|best (shot|photo|one|of)|near[- ]identical|duplicate|"
                  r"pick the best|which (one )?is best|similar shots|cull\b", query.lower()):
         return _answer_bursts(conn)
@@ -154,6 +161,31 @@ def respond(
         bits.append(f"{len(desc)} from AI descriptions")
     note = (" — " + ", ".join(bits)) if bits else ""
     return (f"Here are {len(merged)} photos matching “{query}”{note}.", _refs(merged))
+
+
+def _answer_exact_duplicates(conn: sqlite3.Connection) -> tuple[str, list[dict]]:
+    from . import db as db_mod
+    groups = db_mod.find_duplicate_groups(conn)
+    if not groups:
+        return (
+            "No exact duplicates — every indexed photo has unique file content "
+            "(matched by SHA-256). If you expected some, re-index so older photos "
+            "get a content hash first.",
+            [],
+        )
+    refs: list[dict] = []
+    for grp in groups:
+        # First copy (newest) is the one to keep; the rest are redundant.
+        for i, r in enumerate(grp):
+            refs.append({"id": r["id"], "score": 1.0 - i * 0.001, "keeper": i == 0})
+    extra = sum(len(g) - 1 for g in groups)
+    return (
+        f"Found {len(groups)} set{'s' if len(groups) != 1 else ''} of exact "
+        f"duplicates — {extra} redundant cop{'ies' if extra != 1 else 'y'} you "
+        f"could delete to reclaim space. One file per set is starred ★ to keep; "
+        f"the others are byte-for-byte identical.",
+        refs,
+    )
 
 
 def _answer_bursts(conn: sqlite3.Connection) -> tuple[str, list[dict]]:

@@ -21,6 +21,19 @@
   let down = { x: 0, y: 0, sl: 0, st: 0 };
   let similarTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Click-to-copy for the fingerprint hashes.
+  let hashCopied = $state(false);
+  let copyTimer: ReturnType<typeof setTimeout> | null = null;
+  async function copyHash(value: string | null | undefined) {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      hashCopied = true;
+      if (copyTimer) clearTimeout(copyTimer);
+      copyTimer = setTimeout(() => (hashCopied = false), 1500);
+    } catch { /* clipboard blocked — ignore */ }
+  }
+
   // Tier-3 VLM "describe this photo" — opt-in, cached, async (slow on CPU).
   let vlmAvail = $state<boolean | null>(null);
   let card = $state<{ status: string; description?: string; error?: string }>({ status: "none" });
@@ -206,6 +219,32 @@
             <dt class="text-xs uppercase tracking-wide text-neutral-500">GPS</dt>
             <dd class="font-mono text-xs">{fmtCoord(photo.lat, photo.lon)}</dd>
           </div>
+        </div>
+
+        <!-- Fingerprint: hashes Lumen uses to track this file -->
+        <div class="mt-1 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+          <div class="mb-1 text-xs font-semibold uppercase tracking-wide text-neutral-400">Fingerprint</div>
+          <div class="space-y-1.5">
+            <div>
+              <dt class="text-[11px] uppercase tracking-wide text-neutral-500">SHA-256 · exact content</dt>
+              <dd
+                class="cursor-pointer break-all font-mono text-[11px] text-neutral-300 hover:text-indigo-300"
+                title="Click to copy"
+                onclick={() => copyHash(photo?.sha256)}>
+                {photo.sha256 ?? "— (re-index to compute)"}
+              </dd>
+            </div>
+            <div>
+              <dt class="text-[11px] uppercase tracking-wide text-neutral-500">pHash · perceptual / near-duplicate</dt>
+              <dd
+                class="cursor-pointer break-all font-mono text-[11px] text-neutral-300 hover:text-indigo-300"
+                title="Click to copy"
+                onclick={() => copyHash(photo?.phash)}>
+                {photo.phash ?? "—"}
+              </dd>
+            </div>
+          </div>
+          {#if hashCopied}<div class="mt-1 text-[11px] text-emerald-400">Copied.</div>{/if}
         </div>
 
         <!-- AI description (Tier-3 VLM) — opt-in, cached -->

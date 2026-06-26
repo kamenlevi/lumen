@@ -285,7 +285,7 @@ def search(body: SearchIn) -> dict[str, Any]:
 def photo_detail(photo_id: int) -> dict[str, Any]:
     conn = db.connect()
     row = conn.execute(
-        """SELECT id, path, w, h, taken_at, camera, lat, lon, phash,
+        """SELECT id, path, w, h, taken_at, camera, lat, lon, phash, sha256,
                   thumb_path, indexed_at, mtime
              FROM images WHERE id = ?""",
         (photo_id,),
@@ -293,6 +293,24 @@ def photo_detail(photo_id: int) -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail="Not found")
     return dict(row)
+
+
+@app.get("/library/duplicates")
+def library_duplicates() -> dict[str, Any]:
+    """Exact-duplicate sets: photos whose file content is byte-identical
+    (same SHA-256). Each group lists every copy so the UI can offer cleanup."""
+    conn = db.connect()
+    groups = db.find_duplicate_groups(conn)
+    out = []
+    for rows in groups:
+        copies = [dict(r) for r in rows]
+        out.append({
+            "sha256": rows[0]["sha256"] if rows and "sha256" in rows[0].keys() else None,
+            "count": len(copies),
+            "copies": copies,
+        })
+    wasted = sum(g["count"] - 1 for g in out)
+    return {"groups": out, "group_count": len(out), "extra_copies": wasted}
 
 
 @app.get("/photo/{photo_id}/neighbors")

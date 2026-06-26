@@ -13,6 +13,7 @@ Tuning knobs (env vars):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import queue
 import sqlite3
@@ -83,22 +84,28 @@ def _walk(root: Path) -> Iterable[Path]:
 
 def _existing(conn: sqlite3.Connection, path: str) -> sqlite3.Row | None:
     return conn.execute(
-        "SELECT id, mtime FROM images WHERE path = ?", (path,)
+        "SELECT id, mtime, sha256 FROM images WHERE path = ?", (path,)
     ).fetchone()
 
 
-def _find_move_candidate(conn: sqlite3.Connection, ph: str, new_path: str) -> int | None:
-    """If an existing row has the same pHash but its file is gone, return its id —
-    we treat the new file as a move and update the existing row in place."""
-    if not ph:
-        return None
-    rows = conn.execute(
-        "SELECT id, path FROM images WHERE phash = ? AND path != ?",
-        (ph, new_path),
-    ).fetchall()
-    for r in rows:
-        if not Path(r["path"]).exists():
-            return r["id"]
+def _find_move_candidate(
+    conn: sqlite3.Connection, sha: str | None, ph: str | None, new_path: str
+) -> int | None:
+    """If an existing row matches this file but its own path is gone, return its
+    id — we treat the new file as a move and repoint the row in place.
+
+    SHA-256 (exact bytes) is tried first; pHash second so re-encodes still match.
+    """
+    for col, val in (("sha256", sha), ("phash", ph)):
+        if not val:
+            continue
+        rows = conn.execute(
+            f"SELECT id, path FROM images WHERE {col} = ? AND path != ?",
+            (val, new_path),
+        ).fetchall()
+        for r in rows:
+            if not Path(r["path"]).exists():
+                return r["id"]
     return None
 
 
@@ -128,17 +135,17 @@ def _folder_id_for(conn: sqlite3.Connection, path: Path) -> int | None:
 def _process_batch(
     conn: sqlite3.Connection,
     bundle,
-    items: list[tuple[int, Path, Image.Image, str | None]],
+    items: list[tuple[int, Path, Image.Image, str | None, str | None]],
     progress: IndexProgress,
 ) -> None:
-    """Embed and write a batch. Items are (folder_id, path, img, phash)."""
+    """Embed and write a batch. Items are (folder_id, path, img, phash, sha256)."""
     if not items:
         return
-    images = [im for (_, _, im, _) in items]
+    images = [im for (_, _, im, _, _) in items]
     feats = clip_model.encode_images(bundle, images)
 
     now = time.time()
-    for (folder_id, path, img, ph), feat in zip(items, feats):
+    for (folder_id, path, img, ph, sha), feat in zip(items, feats):
         ex = exif.read_exif(path)
         thumb_p = thumb.make_thumb(path, img)
         mtime = path.stat().st_mtime
@@ -148,22 +155,22 @@ def _process_batch(
             image_id = existing["id"]
             conn.execute(
                 """UPDATE images SET folder_id=?, mtime=?, w=?, h=?, taken_at=?,
-                   camera=?, lat=?, lon=?, phash=?, thumb_path=?, indexed_at=?
+                   camera=?, lat=?, lon=?, phash=?, sha256=?, thumb_path=?, indexed_at=?
                    WHERE id=?""",
                 (
                     folder_id, mtime, img.width, img.height, ex.taken_at,
-                    ex.camera, ex.lat, ex.lon, ph, str(thumb_p), now, image_id,
+                    ex.camera, ex.lat, ex.lon, ph, sha, str(thumb_p), now, image_id,
                 ),
             )
             conn.execute("DELETE FROM image_vecs WHERE id = ?", (image_id,))
         else:
             cur = conn.execute(
                 """INSERT INTO images(path, folder_id, mtime, w, h, taken_at,
-                   camera, lat, lon, phash, thumb_path, indexed_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   camera, lat, lon, phash, sha256, thumb_path, indexed_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(path), folder_id, mtime, img.width, img.height, ex.taken_at,
-                    ex.camera, ex.lat, ex.lon, ph, str(thumb_p), now,
+                    ex.camera, ex.lat, ex.lon, ph, sha, str(thumb_p), now,
                 ),
             )
             image_id = cur.lastrowid
@@ -183,6 +190,7 @@ def _handle_move(
     path: Path,
     img: Image.Image,
     ph: str | None,
+    sha: str | None,
     progress: IndexProgress,
 ) -> None:
     """Repoint an existing row to a new path. Embedding stays untouched."""
@@ -191,28 +199,45 @@ def _handle_move(
     mtime = path.stat().st_mtime
     conn.execute(
         """UPDATE images SET path=?, folder_id=?, mtime=?, w=?, h=?, taken_at=?,
-           camera=?, lat=?, lon=?, phash=?, thumb_path=?, indexed_at=?
+           camera=?, lat=?, lon=?, phash=?, sha256=?, thumb_path=?, indexed_at=?
            WHERE id=?""",
         (
             str(path), folder_id, mtime, img.width, img.height, ex.taken_at,
-            ex.camera, ex.lat, ex.lon, ph, str(thumb_p), time.time(), move_id,
+            ex.camera, ex.lat, ex.lon, ph, sha, str(thumb_p), time.time(), move_id,
         ),
     )
     conn.commit()
     progress.moved += 1
 
 
-def _load_one(path: Path) -> tuple[Path, Image.Image | None, str | None, str | None]:
-    """Worker-side: decode image and compute pHash. Returns (path, img, phash, err)."""
+def _sha256_file(path: Path) -> str | None:
+    """Exact content hash of the file's raw bytes. Streamed so a 50MB RAW
+    doesn't land in memory all at once."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def _load_one(
+    path: Path,
+) -> tuple[Path, Image.Image | None, str | None, str | None, str | None]:
+    """Worker-side: decode image, compute pHash (perceptual) and SHA-256
+    (exact-content). Returns (path, img, phash, sha256, err)."""
+    sha = _sha256_file(path)
     try:
         img = thumb.load_image(path)
     except Exception as e:
-        return (path, None, None, str(e))
+        return (path, None, None, sha, str(e))
     try:
         ph: str | None = str(imagehash.phash(img))
     except Exception:
         ph = None
-    return (path, img, ph, None)
+    return (path, img, ph, sha, None)
 
 
 def index_paths(
@@ -243,7 +268,14 @@ def index_paths(
         progress.current_path = str(path)
         try:
             existing = _existing(conn, str(path))
-            if existing and abs(existing["mtime"] - path.stat().st_mtime) < 1e-3:
+            # Skip only if unchanged AND already fingerprinted. A row missing its
+            # sha256 (indexed before content-hashing existed) is reprocessed so
+            # the hash gets backfilled — a re-index quietly upgrades old photos.
+            if (
+                existing
+                and abs(existing["mtime"] - path.stat().st_mtime) < 1e-3
+                and existing["sha256"]
+            ):
                 progress.skipped += 1
                 if on_progress:
                     on_progress(progress)
@@ -280,12 +312,12 @@ def index_paths(
 
     threading.Thread(target=producer, daemon=True, name="phc-producer").start()
 
-    batch: list[tuple[int, Path, Image.Image, str | None]] = []
+    batch: list[tuple[int, Path, Image.Image, str | None, str | None]] = []
     while True:
         item = loaded_q.get()
         if item is None:
             break
-        fid, path, img, ph, err = item
+        fid, path, img, ph, sha, err = item
         if err is not None or img is None:
             progress.failed += 1
             sys.stderr.write(f"[index] failed: {path}: {err}\n")
@@ -294,15 +326,18 @@ def index_paths(
             continue
 
         existing = _existing(conn, str(path))
-        if not existing and ph:
-            move_id = _find_move_candidate(conn, ph, str(path))
+        if not existing:
+            # A new path that matches a vanished row is a move/rename. SHA-256
+            # (exact bytes) is the strongest signal; fall back to pHash so a
+            # re-encode/rotate is still recognised.
+            move_id = _find_move_candidate(conn, sha, ph, str(path))
             if move_id is not None:
-                _handle_move(conn, move_id, fid, path, img, ph, progress)
+                _handle_move(conn, move_id, fid, path, img, ph, sha, progress)
                 if on_progress:
                     on_progress(progress)
                 continue
 
-        batch.append((fid or 0, path, img, ph))
+        batch.append((fid or 0, path, img, ph, sha))
         if len(batch) >= batch_size:
             try:
                 _process_batch(conn, bundle, batch, progress)
@@ -324,6 +359,39 @@ def index_paths(
     if on_progress:
         on_progress(progress)
     return progress
+
+
+def backfill_sha256(
+    conn: sqlite3.Connection | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> dict:
+    """One-time upgrade: compute SHA-256 for already-indexed photos that predate
+    content hashing. Cheap — only reads file bytes, never touches CLIP/thumbs.
+    Rows whose file has vanished are left alone (the next prune sweeps them)."""
+    conn = conn or db.connect()
+    rows = conn.execute(
+        "SELECT id, path FROM images WHERE sha256 IS NULL OR sha256 = ''"
+    ).fetchall()
+    total = len(rows)
+    done = updated = missing = 0
+    for r in rows:
+        done += 1
+        p = Path(r["path"])
+        if not p.exists():
+            missing += 1
+        else:
+            sha = _sha256_file(p)
+            if sha:
+                conn.execute(
+                    "UPDATE images SET sha256 = ? WHERE id = ?", (sha, r["id"])
+                )
+                updated += 1
+        if done % 50 == 0:
+            conn.commit()
+        if on_progress:
+            on_progress(done, total)
+    conn.commit()
+    return {"total": total, "updated": updated, "missing": missing}
 
 
 def index_folder(
@@ -383,7 +451,10 @@ def index_folder(
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Index a folder of images.")
-    p.add_argument("folder", type=Path, help="Folder to index recursively.")
+    p.add_argument(
+        "folder", type=Path, nargs="?",
+        help="Folder to index recursively (omit with --backfill-hashes).",
+    )
     p.add_argument("--model", default=clip_model.DEFAULT_MODEL)
     p.add_argument("--pretrained", default=clip_model.DEFAULT_PRETRAINED)
     p.add_argument("--device", default=None, help="cuda | mps | cpu | auto")
@@ -392,8 +463,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Only process the first N images. Handy for benchmarking before "
              "a multi-hour run.",
     )
+    p.add_argument(
+        "--backfill-hashes", action="store_true",
+        help="Compute SHA-256 for already-indexed photos that lack one, then "
+             "exit. Fast — does not re-run CLIP. Pass any folder as a no-op arg.",
+    )
     args = p.parse_args(argv)
 
+    if args.backfill_hashes:
+        def log_bf(done: int, total: int) -> None:
+            print(f"\r[backfill] {done}/{total}", end="", flush=True)
+        r = backfill_sha256(on_progress=log_bf)
+        print(f"\nBackfilled {r['updated']} hash(es); {r['missing']} file(s) missing.")
+        return 0
+
+    if args.folder is None:
+        print("A folder is required (or use --backfill-hashes).", file=sys.stderr)
+        return 2
     root = args.folder.expanduser().resolve()
     if not root.is_dir():
         print(f"Not a directory: {root}", file=sys.stderr)

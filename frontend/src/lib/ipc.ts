@@ -105,9 +105,24 @@ export interface PhotoDetail {
   lat: number | null;
   lon: number | null;
   phash: string | null;
+  sha256: string | null;
   thumb_path: string | null;
   indexed_at: number;
   mtime: number;
+}
+
+export interface DuplicateGroup {
+  sha256: string | null;
+  count: number;
+  copies: {
+    id: number;
+    path: string;
+    thumb_path: string | null;
+    w: number | null;
+    h: number | null;
+    taken_at: string | null;
+    indexed_at: number;
+  }[];
 }
 
 export interface IndexProgress {
@@ -235,6 +250,10 @@ export const api = {
     req<{ ok: boolean; pruned: number }>(
       folder ? `/index/prune?folder=${encodeURIComponent(folder)}` : "/index/prune",
       { method: "POST" }
+    ),
+  duplicates: () =>
+    req<{ groups: DuplicateGroup[]; group_count: number; extra_copies: number }>(
+      "/library/duplicates"
     ),
   setWatch: (path: string, watch: boolean) =>
     req<{ ok: boolean; watch: boolean }>("/library/folders/watch", {
