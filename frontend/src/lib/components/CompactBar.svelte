@@ -14,9 +14,9 @@
   async function submit() {
     const q = query.trim();
     if (!q) return;
-    spotlightQuery.set(q);     // the search page picks this up
+    spotlightQuery.set(q);     // the chat page picks this up and asks it
     await applyMode("expanded");
-    goto("/search/");
+    goto("/chat/");
   }
 
   function onKey(e: KeyboardEvent) {

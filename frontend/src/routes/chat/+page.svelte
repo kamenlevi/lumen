@@ -2,7 +2,7 @@
   import { tick, onMount } from "svelte";
   import { api, type Chat, type ChatMessage, type SearchResult } from "$lib/ipc";
   import ResultGrid from "$lib/components/ResultGrid.svelte";
-  import { focusTick } from "$lib/shell";
+  import { focusTick, spotlightQuery } from "$lib/shell";
 
   let inputEl: HTMLTextAreaElement | null = $state(null);
   function focusInput() {
@@ -157,6 +157,18 @@
 
   $effect(() => {
     loadChats();
+  });
+
+  // When the compact spotlight bar submits a query, start a fresh chat with it
+  // as the first question. Clearing the store afterwards avoids re-asking.
+  $effect(() => {
+    const q = $spotlightQuery;
+    if (q && !sending) {
+      spotlightQuery.set("");
+      newChat();
+      input = q;
+      send();
+    }
   });
 </script>
 
