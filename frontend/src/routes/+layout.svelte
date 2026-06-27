@@ -12,6 +12,7 @@
     { href: "/chat/", label: "Chat" },
     { href: "/search/", label: "Search" },
     { href: "/library/", label: "Library" },
+    { href: "/duplicates/", label: "Duplicates" },
     { href: "/models/", label: "Models" },
     { href: "/settings/", label: "Settings" },
   ];

@@ -313,6 +313,33 @@ def library_duplicates() -> dict[str, Any]:
     return {"groups": out, "group_count": len(out), "extra_copies": wasted}
 
 
+@app.delete("/photo/{photo_id}")
+def delete_photo(photo_id: int, trash: bool = True) -> dict[str, Any]:
+    """Remove a photo. With trash=true (default) the file is moved to the system
+    Trash — recoverable, never a hard delete. With trash=false only the index
+    row is dropped and the file is left on disk. The image_vecs virtual table
+    has no FK cascade, so it's cleaned explicitly; quality/color/vlm rows
+    cascade via ON DELETE CASCADE."""
+    conn = db.connect()
+    row = conn.execute("SELECT id, path FROM images WHERE id = ?", (photo_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Photo not indexed")
+    trashed = False
+    if trash:
+        p = Path(row["path"])
+        if p.exists():
+            try:
+                from send2trash import send2trash as _to_trash
+                _to_trash(str(p))
+                trashed = True
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Couldn't trash file: {e}")
+    conn.execute("DELETE FROM image_vecs WHERE id = ?", (photo_id,))
+    conn.execute("DELETE FROM images WHERE id = ?", (photo_id,))
+    conn.commit()
+    return {"ok": True, "trashed": trashed, "path": row["path"]}
+
+
 @app.get("/photo/{photo_id}/neighbors")
 def photo_neighbors(photo_id: int) -> dict[str, Any]:
     """Previous/next photo in the same folder, ordered by capture time then

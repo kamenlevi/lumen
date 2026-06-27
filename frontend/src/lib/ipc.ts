@@ -255,6 +255,11 @@ export const api = {
     req<{ groups: DuplicateGroup[]; group_count: number; extra_copies: number }>(
       "/library/duplicates"
     ),
+  deletePhoto: (id: number, trash = true) =>
+    req<{ ok: boolean; trashed: boolean; path: string }>(
+      `/photo/${id}?trash=${trash}`,
+      { method: "DELETE" }
+    ),
   setWatch: (path: string, watch: boolean) =>
     req<{ ok: boolean; watch: boolean }>("/library/folders/watch", {
       method: "POST",
