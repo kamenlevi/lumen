@@ -7,6 +7,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import re
 import sqlite3
 import sys
 from dataclasses import dataclass
