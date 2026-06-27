@@ -27,7 +27,7 @@
       <button
         type="button"
         on:click={() => open(r)}
-        class="group relative aspect-square overflow-hidden rounded-md bg-neutral-900 {r.keeper === true ? 'ring-2 ring-amber-400' : r.keeper === false ? 'opacity-60 ring-1 ring-neutral-800 hover:opacity-100' : 'ring-1 ring-neutral-800 hover:ring-neutral-600'}">
+        class="group relative aspect-square overflow-hidden rounded-md bg-neutral-900 {r.keeper === true ? 'ring-2 ring-amber-400' : 'ring-1 ring-neutral-800 hover:ring-neutral-600'}">
         <img
           src={api.photoThumbUrl(r.id)}
           alt={r.path}

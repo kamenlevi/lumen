@@ -19,6 +19,10 @@ RAPID_GAP_S = 3.5  # shots this close in time ARE the same burst (rapid fire)
 TIME_GAP_S = 6.0   # up to here, group only if also visually similar
 PHASH_MAX = 14     # perceptual-hash Hamming distance for "visually similar"
 MIN_BURST = 2
+# A shot whose score is within this fraction of the burst's best is ALSO a
+# keeper — so a burst with two (or more) equally-good frames highlights them all
+# instead of arbitrarily picking one.
+KEEPER_TOL = 0.04
 
 
 def _phash_hamming(a: str | None, b: str | None) -> int:
@@ -99,9 +103,12 @@ def find_bursts(conn: sqlite3.Connection, limit_bursts: int | None = None) -> li
     out: list[list[dict]] = []
     for g in groups:
         scored = [(r["id"], _score(r)) for r in g]
-        keeper_id = max(scored, key=lambda t: t[1])[0]
+        top = max(sc for _, sc in scored)
+        # The best frame is always a keeper; any sibling within KEEPER_TOL of it
+        # (only meaningful when the top score is positive) is a keeper too.
+        cutoff = top * (1.0 - KEEPER_TOL) if top > 0 else top
         out.append([
-            {"id": iid, "score": round(sc, 2), "is_keeper": iid == keeper_id}
+            {"id": iid, "score": round(sc, 2), "is_keeper": sc >= cutoff}
             for iid, sc in scored
         ])
     # biggest bursts first (most to cull)
