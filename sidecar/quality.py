@@ -253,14 +253,66 @@ def _flags_str(m: dict) -> str:
     return ",".join(flags) if flags else "ok"
 
 
+def reanalyze_indexed(limit: int | None = None) -> dict:
+    """Re-run the (subject-aware) quality pass over every already-indexed photo
+    and store the upgraded metrics. Use this after the analysis engine changes
+    so older rows pick up object/subject detection + eye/face sharpness — without
+    re-running CLIP. Files that have vanished are left for the next prune."""
+    from . import db
+    conn = db.connect()
+    rows = conn.execute("SELECT id, path FROM images ORDER BY id").fetchall()
+    if limit:
+        rows = rows[:limit]
+    total = len(rows)
+    done = updated = missing = failed = 0
+    started = time.time()
+    for r in rows:
+        done += 1
+        path = Path(r["path"])
+        if not path.exists():
+            missing += 1
+        else:
+            try:
+                m = analyze_path(path)
+                db.upsert_quality(conn, r["id"], m)
+                updated += 1
+            except Exception as e:
+                failed += 1
+                print(f"  ! failed {path.name}: {e}", file=sys.stderr)
+        if done % 10 == 0 or done == total:
+            conn.commit()
+            rate = done / max(time.time() - started, 1e-3)
+            eta = (total - done) / max(rate, 1e-3)
+            print(f"\r[{done}/{total}] updated={updated} missing={missing} "
+                  f"failed={failed}  {rate:.1f} img/s  ETA {eta:.0f}s",
+                  end="", flush=True)
+    conn.commit()
+    print()
+    return {"total": total, "updated": updated, "missing": missing, "failed": failed}
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Tier-2 CV quality analysis of a folder.")
-    p.add_argument("folder", type=Path, help="Folder of images (recursive).")
+    p.add_argument("folder", type=Path, nargs="?",
+                   help="Folder of images (recursive). Omit with --all.")
+    p.add_argument("--all", action="store_true",
+                   help="Re-analyze every already-indexed photo (whole library) "
+                        "and store the upgraded subject-aware metrics. No folder "
+                        "needed; does not re-run CLIP.")
     p.add_argument("--store", action="store_true",
                    help="Write metrics to the DB for images already indexed.")
     p.add_argument("--limit", type=int, default=None, help="Only first N images.")
     args = p.parse_args(argv)
 
+    if args.all:
+        r = reanalyze_indexed(limit=args.limit)
+        print(f"Re-analyzed {r['updated']} indexed photo(s) with the subject-aware "
+              f"engine; {r['missing']} missing, {r['failed']} failed.")
+        return 0
+
+    if args.folder is None:
+        print("A folder is required (or use --all).", file=sys.stderr)
+        return 2
     root = args.folder.expanduser().resolve()
     if not root.is_dir():
         print(f"Not a directory: {root}", file=sys.stderr)
