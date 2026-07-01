@@ -130,9 +130,6 @@ def healthz() -> dict[str, Any]:
 @app.get("/library/folders")
 def list_folders() -> list[dict[str, Any]]:
     conn = db.connect()
-    dim = db.get_setting(conn, "embedding_dim")
-    if dim:
-        db.init_db(conn, int(dim))
     rows = conn.execute(
         """SELECT folders.id, folders.path, folders.added_at, folders.watch,
                   COUNT(images.id) AS image_count
@@ -150,8 +147,9 @@ def add_folder(body: FolderIn) -> dict[str, Any]:
     if not root.is_dir():
         raise HTTPException(status_code=400, detail=f"Not a directory: {root}")
     conn = db.connect()
-    bundle = clip_model.get_model()
-    db.init_db(conn, bundle.dim)
+    # Note: no model needed here — the vector table is created by the first
+    # index run. Loading CLIP just to add a folder made this button take
+    # seconds; now it's instant.
     # Auto-enable watch so the folder stays in sync (adds/edits/moves/deletes)
     # without the user having to do anything.
     conn.execute(
@@ -441,8 +439,6 @@ def get_settings() -> dict[str, Any]:
 @app.post("/settings")
 def set_settings(body: SettingsIn) -> dict[str, Any]:
     conn = db.connect()
-    bundle = clip_model.get_model()
-    db.init_db(conn, bundle.dim)
     if body.model_name:
         db.set_setting(conn, "model_name", body.model_name)
     if body.pretrained:
@@ -650,9 +646,24 @@ def _start_persistent_watchers() -> None:
             print(f"[server] failed to start watcher for {r['path']}: {e}", flush=True)
 
 
+def _warm_model() -> None:
+    """Load the CLIP model in the background right after boot, so the *first*
+    search doesn't pay the 3-5s torch cold start."""
+    try:
+        conn = db.connect()
+        name = db.get_setting(conn, "model_name", clip_model.DEFAULT_MODEL)
+        pretrained = db.get_setting(conn, "pretrained", clip_model.DEFAULT_PRETRAINED)
+        clip_model.get_model(name or clip_model.DEFAULT_MODEL,
+                             pretrained or clip_model.DEFAULT_PRETRAINED)
+        print("[server] CLIP model warmed up", flush=True)
+    except Exception as e:
+        print(f"[server] model warm-up failed (will load on first use): {e}", flush=True)
+
+
 @app.on_event("startup")
 def _on_startup() -> None:
     _start_persistent_watchers()
+    threading.Thread(target=_warm_model, daemon=True, name="model-warmup").start()
 
 
 @app.on_event("shutdown")

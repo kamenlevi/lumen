@@ -132,6 +132,12 @@ def _vec_table_sql(dim: int) -> str:
     """
 
 
+# Paths whose schema/migration already ran this process. connect() is called
+# on every request; re-running DDL each time is wasted work, so it happens
+# once per DB file. (WAL is persistent, so setting it once is also enough.)
+_initialized: set[str] = set()
+
+
 def connect(path: Path | None = None) -> sqlite3.Connection:
     p = path or db_path()
     conn = sqlite3.connect(str(p), check_same_thread=False)
@@ -140,10 +146,18 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.executescript(SCHEMA)
-    _migrate(conn)
-    conn.commit()
+    if str(p) not in _initialized:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.executescript(SCHEMA)
+        _migrate(conn)
+        # If a previous run recorded the embedding size, create the vector
+        # table now — then no endpoint ever needs the CLIP model loaded just
+        # to touch the DB.
+        dim = get_setting(conn, "embedding_dim")
+        if dim:
+            conn.execute(_vec_table_sql(int(dim)))
+        conn.commit()
+        _initialized.add(str(p))
     return conn
 
 
@@ -171,8 +185,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 def init_db(conn: sqlite3.Connection, embedding_dim: int) -> None:
-    conn.executescript(SCHEMA)
+    """Ensure the vector table exists for this embedding size and remember the
+    size, so later connections can recreate the table without the model."""
     conn.execute(_vec_table_sql(embedding_dim))
+    if get_setting(conn, "embedding_dim") != str(embedding_dim):
+        set_setting(conn, "embedding_dim", str(embedding_dim))
     conn.commit()
 
 

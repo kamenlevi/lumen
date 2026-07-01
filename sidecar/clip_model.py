@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -40,6 +41,9 @@ class _ModelBundle:
 
 
 _cached: _ModelBundle | None = None
+# Loading takes seconds and ~1GB RAM; the lock stops two threads (e.g. the
+# startup warm-up and a first search) from each loading their own copy.
+_load_lock = threading.Lock()
 
 
 def get_model(
@@ -49,26 +53,27 @@ def get_model(
 ) -> _ModelBundle:
     global _cached
     dev = pick_device(device)
-    if _cached and (_cached.name, _cached.pretrained, _cached.device) == (name, pretrained, dev):
+    with _load_lock:
+        if _cached and (_cached.name, _cached.pretrained, _cached.device) == (name, pretrained, dev):
+            return _cached
+
+        os.environ.setdefault("HF_HOME", str(model_cache_dir()))
+        os.environ.setdefault("TORCH_HOME", str(model_cache_dir()))
+
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            name,
+            pretrained=pretrained,
+            cache_dir=str(model_cache_dir()),
+        )
+        model = model.to(dev).eval()
+        tokenizer = open_clip.get_tokenizer(name)
+
+        with torch.no_grad():
+            sample = tokenizer(["probe"]).to(dev)
+            dim = int(model.encode_text(sample).shape[-1])
+
+        _cached = _ModelBundle(name, pretrained, dev, model, preprocess, tokenizer, dim)
         return _cached
-
-    os.environ.setdefault("HF_HOME", str(model_cache_dir()))
-    os.environ.setdefault("TORCH_HOME", str(model_cache_dir()))
-
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        name,
-        pretrained=pretrained,
-        cache_dir=str(model_cache_dir()),
-    )
-    model = model.to(dev).eval()
-    tokenizer = open_clip.get_tokenizer(name)
-
-    with torch.no_grad():
-        sample = tokenizer(["probe"]).to(dev)
-        dim = int(model.encode_text(sample).shape[-1])
-
-    _cached = _ModelBundle(name, pretrained, dev, model, preprocess, tokenizer, dim)
-    return _cached
 
 
 @torch.no_grad()
