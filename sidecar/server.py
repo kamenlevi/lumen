@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from . import chat as chat_brain
 from . import clip_model, db
 from . import models as model_mgr
+from . import query_engine
 from . import vlm
 from .index import IndexProgress, index_folder
 from .paths import app_data_dir, db_path, port_file
@@ -266,17 +267,20 @@ def index_prune(folder: str | None = None) -> dict[str, Any]:
 
 @app.post("/search")
 def search(body: SearchIn) -> dict[str, Any]:
-    results = search_text(
-        body.query,
-        top_k=body.top_k,
-        offset=body.offset,
-        folder=body.folder,
-        camera=body.camera,
-        date_from=body.date_from,
-        date_to=body.date_to,
-        has_gps=body.has_gps,
+    """Same brain as chat (query_engine), so "blurry" here means the sharpness
+    filter, not whatever CLIP thinks blur looks like. `offset` only makes
+    sense for the plain-CLIP path, so paged requests skip intent routing."""
+    filters = query_engine.Filters(
+        folder=body.folder, camera=body.camera,
+        date_from=body.date_from, date_to=body.date_to, has_gps=body.has_gps,
     )
-    return {"results": [r.to_dict() for r in results]}
+    if body.offset:
+        results = search_text(body.query, top_k=body.top_k, offset=body.offset,
+                              **filters.kwargs())
+        return {"results": [r.to_dict() for r in results]}
+    conn = db.connect()
+    ans = query_engine.run_query(conn, body.query, top_k=body.top_k, filters=filters)
+    return {"results": [r.to_dict() for r in ans.results], "kind": ans.kind}
 
 
 @app.get("/photo/{photo_id}")

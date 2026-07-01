@@ -1,10 +1,10 @@
 """Chat brain: turn a user message into an assistant reply plus photo results.
 
 This is a deliberately thin, swappable seam. It is NOT yet a full LLM agent
-(that's a later step), but it already does more than keyword search: it
-recognises Tier-2 *quality* intents ("blurry", "sharp", "dark", "out of
-focus") and answers them by filtering the computed quality metrics — combined
-with CLIP when the query also names content ("blurry photos of the city").
+(that's a later step). All finding logic lives in query_engine — the ONE brain
+shared with the /search endpoint — so chat and plain search always agree.
+Chat adds: conversation-only intents (exact duplicates, bursts) and the prose
+around the results.
 """
 
 from __future__ import annotations
@@ -14,47 +14,9 @@ import sqlite3
 
 from . import bursts as bursts_mod
 from . import db
-from .search import (
-    COLOR_BINS,
-    QUALITY_FILTERS,
-    SearchResult,
-    detect_object_label,
-    search_by_color,
-    search_by_object,
-    search_by_quality,
-    search_descriptions,
-    search_text,
-)
-
-# Color words we can answer with the cheap hue histogram (no model).
-_COLOR_SPECIAL = ["colorful", "colourful", "vibrant", "monochrome",
-                  "black and white", "grayscale", "greyscale", "b&w"]
-_COLOR_WORDS = list(COLOR_BINS.keys()) + _COLOR_SPECIAL
-
-DEFAULT_RESULT_K = 24
-# When combining content + quality, pull a wider CLIP net first, then filter.
-CONTENT_CANDIDATE_K = 200
-
-# Phrases that signal a quality intent → (flag, human label). Multi-word
-# phrases are checked first so "out of focus" wins over "focus".
-_QUALITY_PHRASES: list[tuple[str, str, str]] = [
-    (r"eyes (are |is )?(closed|shut)|closed eyes|shut eyes|blink(ed|ing)?|someone blinked|who blinked",
-     "eyes_closed", "closed eyes"),
-    (r"everyone.{0,15}eyes open|all eyes open|everyone.{0,15}looking|nobody blinked|eyes open",
-     "eyes_open", "everyone's eyes open"),
-    (r"soft eyes|eyes (are )?(not sharp|blurry|soft|out of focus)|blurry eyes|eyes not in focus",
-     "soft_eyes", "soft / unsharp eyes"),
-    (r"\b(faces|portraits?|people|persons?|headshots?)\b",
-     "has_faces", "people"),
-    (r"subject.{0,20}out of focus|out of focus.{0,20}subject|missed focus|"
-     r"focus on the background|background (is )?in focus",
-     "out_of_focus", "subject out of focus"),
-    (r"out[- ]of[- ]focus|blurry|blurred|\bblur\b|not sharp|soft focus|motion blur",
-     "blurry", "blurry"),
-    (r"\bsharp(est)?\b|in focus|crisp|tack sharp", "sharp", "sharp"),
-    (r"under[- ]?exposed|too dark|\bdark\b|dim\b|underexposed", "dark", "dark / underexposed"),
-    (r"over[- ]?exposed|too bright|blown out|overexposed|\bbright\b", "bright", "bright / overexposed"),
-]
+from . import query_engine as engine
+from .query_engine import DEFAULT_RESULT_K, QueryAnswer
+from .search import SearchResult
 
 
 def _title_from(text: str) -> str:
@@ -62,47 +24,15 @@ def _title_from(text: str) -> str:
     return (t[:40] + "…") if len(t) > 40 else t or "New chat"
 
 
-def _detect_quality(text: str) -> tuple[str, str, str] | None:
-    """Return (flag, label, matched_phrase) if the text names a quality intent."""
-    low = text.lower()
-    for pattern, flag, label in _QUALITY_PHRASES:
-        m = re.search(pattern, low)
-        if m:
-            return flag, label, m.group(0)
-    return None
-
-
-def _detect_color(text: str) -> str | None:
-    low = text.lower()
-    for word in sorted(_COLOR_WORDS, key=len, reverse=True):  # multiword first
-        if re.search(rf"\b{re.escape(word)}\b", low):
-            return word
-    return None
-
-
-def _residual_content(text: str, extra_words: list[str] | None = None) -> str:
-    """Strip quality/color words so the rest can be a CLIP content query
-    ("blurry photos of the city" → "city")."""
-    low = text
-    for pattern, _flag, _label in _QUALITY_PHRASES:
-        low = re.sub(pattern, " ", low, flags=re.IGNORECASE)
-    for word in extra_words or []:
-        low = re.sub(rf"\b{re.escape(word)}\b", " ", low, flags=re.IGNORECASE)
-    # drop filler so a bare "blurry photos" leaves nothing to CLIP-search
-    low = re.sub(r"\b(photos?|pictures?|images?|shots?|subjects?|colou?red?|eyes?|open|closed|everyone|"
-                 r"looking|faces?|people|persons?|portraits?|headshots?|soft|where|whose|who|"
-                 r"of|my|the|all|show|me|find|with|that|are|is|which|ones?)\b",
-                 " ", low, flags=re.IGNORECASE)
-    return " ".join(low.split())
-
-
 def _refs(results: list[SearchResult]) -> list[dict]:
     return [{"id": r.id, "score": round(r.score, 4)} for r in results]
 
 
-def _have_quality_data(conn: sqlite3.Connection) -> bool:
-    row = conn.execute("SELECT COUNT(*) AS n FROM quality_metrics").fetchone()
-    return bool(row and row["n"])
+_EMPTY_LIBRARY_MSG = (
+    "Your library is empty — there's nothing for me to search yet. "
+    "Open the Library tab, add a photo folder, and hit Index. "
+    "After that you can ask me anything about your photos."
+)
 
 
 def respond(
@@ -113,6 +43,10 @@ def respond(
     query = user_text.strip()
     if not query:
         return ("What would you like to find or know about your photos?", [])
+
+    # Guide a brand-new user instead of pretending to search nothing.
+    if not conn.execute("SELECT 1 FROM images LIMIT 1").fetchone():
+        return (_EMPTY_LIBRARY_MSG, [])
 
     # Exact duplicates (byte-identical files) — distinct from bursts, which are
     # near-identical *different* frames. Route explicit "same/identical file"
@@ -125,47 +59,31 @@ def respond(
                  r"pick the best|which (one )?is best|similar shots|cull\b", query.lower()):
         return _answer_bursts(conn)
 
-    quality = _detect_quality(query)
-    if quality:
-        return _answer_quality(conn, query, quality)
+    ans = engine.run_query(conn, query, top_k=DEFAULT_RESULT_K)
 
-    color = _detect_color(query)
-    if color:
-        return _answer_color(conn, query, color)
-
-    # Plain search, best signal first:
-    #  1. object detector found it (definitive — "person", "car", "dog"…)
-    #  2. an AI description mentions it
-    #  3. CLIP semantic similarity (everything else)
-    obj_label = detect_object_label(query)
-    objs = search_by_object(obj_label, top_k=DEFAULT_RESULT_K) if obj_label else []
-    desc = search_descriptions(query, top_k=DEFAULT_RESULT_K)
-    clip = search_text(query, top_k=DEFAULT_RESULT_K)
-    seen: set[int] = set()
-    merged: list[SearchResult] = []
-    for r in objs + desc + clip:
-        if r.id not in seen:
-            seen.add(r.id)
-            merged.append(r)
-    merged = merged[:DEFAULT_RESULT_K]
-    if not merged:
+    if ans.missing_data == "quality":
         return (
-            f"I couldn’t find anything matching “{query}”. Make sure the folder "
-            "is indexed in the Library tab, or try describing it differently.",
+            "I haven't analysed your library for image quality yet (sharpness, "
+            "exposure, focus). Once that pass has run I can answer this — for now "
+            "I can only do content search.",
             [],
         )
-    bits = []
-    if objs:
-        bits.append(f"{len(objs)} where I detected a {obj_label}")
-    if desc:
-        bits.append(f"{len(desc)} from AI descriptions")
-    note = (" — " + ", ".join(bits)) if bits else ""
-    return (f"Here are {len(merged)} photos matching “{query}”{note}.", _refs(merged))
+    if ans.missing_data == "color":
+        return (
+            "I haven't analysed your library's colors yet. Once that quick pass "
+            "has run, “find pink photos” becomes an instant filter.",
+            [],
+        )
+
+    if ans.kind == "quality":
+        return _prose_quality(conn, ans)
+    if ans.kind == "color":
+        return _prose_color(ans)
+    return _prose_search(query, ans)
 
 
 def _answer_exact_duplicates(conn: sqlite3.Connection) -> tuple[str, list[dict]]:
-    from . import db as db_mod
-    groups = db_mod.find_duplicate_groups(conn)
+    groups = db.find_duplicate_groups(conn)
     if not groups:
         return (
             "No exact duplicates — every indexed photo has unique file content "
@@ -209,84 +127,57 @@ def _answer_bursts(conn: sqlite3.Connection) -> tuple[str, list[dict]]:
     )
 
 
-def _answer_color(
-    conn: sqlite3.Connection,
-    query: str,
-    color: str,
-) -> tuple[str, list[dict]]:
-    if not conn.execute("SELECT COUNT(*) AS n FROM color_metrics").fetchone()["n"]:
+def _prose_quality(conn: sqlite3.Connection, ans: QueryAnswer) -> tuple[str, list[dict]]:
+    label = ans.quality_label
+    if ans.content:
+        if not ans.results:
+            return (f"None of the photos matching “{ans.content}” have {label}.", [])
         return (
-            "I haven’t analysed your library’s colors yet. Once that quick pass "
-            "has run, “find pink photos” becomes an instant filter.",
-            [],
+            f"Of your photos matching “{ans.content}” — {len(ans.results)} with {label}.",
+            _refs(ans.results),
         )
-
-    content = _residual_content(query, extra_words=[color])
-    if content:
-        clip_hits = search_text(content, top_k=CONTENT_CANDIDATE_K)
-        cand_ids = [r.id for r in clip_hits]
-        results = search_by_color(color, top_k=DEFAULT_RESULT_K, candidate_ids=cand_ids)
-        if not results:
-            return (f"None of your “{content}” photos are noticeably {color}.", [])
-        return (
-            f"Your {color} photos matching “{content}” — {len(results)}, "
-            f"most {color} first.",
-            _refs(results),
-        )
-
-    results = search_by_color(color, top_k=DEFAULT_RESULT_K)
-    if not results:
-        return (f"I didn’t find noticeably {color} photos in your library.", [])
-    return (
-        f"Here are your most {color} photos ({len(results)} shown, "
-        f"strongest first). This uses each photo’s color makeup, not keywords.",
-        _refs(results),
-    )
-
-
-def _answer_quality(
-    conn: sqlite3.Connection,
-    query: str,
-    quality: tuple[str, str, str],
-) -> tuple[str, list[dict]]:
-    flag, label, _phrase = quality
-
-    if not _have_quality_data(conn):
-        return (
-            "I haven’t analysed your library for image quality yet (sharpness, "
-            "exposure, focus). Once that pass has run I can answer this — for now "
-            "I can only do content search.",
-            [],
-        )
-
-    content = _residual_content(query)
-    if content:
-        # Narrow by content with CLIP, then keep only those matching the quality flag.
-        clip_hits = search_text(content, top_k=CONTENT_CANDIDATE_K)
-        cand_ids = [r.id for r in clip_hits]
-        results = search_by_quality(flag, top_k=DEFAULT_RESULT_K, candidate_ids=cand_ids)
-        if not results:
-            return (
-                f"None of the photos matching “{content}” have {label}. "
-                f"(Checked {len(cand_ids)} content matches.)",
-                [],
-            )
-        return (
-            f"Of your photos matching “{content}” — {len(results)} with {label}.",
-            _refs(results),
-        )
-
-    # Pure quality query over the whole library.
-    results = search_by_quality(flag, top_k=DEFAULT_RESULT_K)
-    total = conn.execute(
-        f"SELECT COUNT(*) AS n FROM quality_metrics q WHERE {QUALITY_FILTERS[flag]}"
-    ).fetchone()["n"]
-    if not results:
+    if not ans.results:
         return (f"No photos found with {label}.", [])
-    shown = len(results)
+    shown = len(ans.results)
+    total = ans.total_matching or shown
     more = f" (showing the strongest {shown})" if total > shown else ""
     return (
         f"Found {total} photo{'s' if total != 1 else ''} — {label}{more}. "
         f"Each tile shows its scores so you can check my work.",
-        _refs(results),
+        _refs(ans.results),
     )
+
+
+def _prose_color(ans: QueryAnswer) -> tuple[str, list[dict]]:
+    color = ans.color
+    if ans.content:
+        if not ans.results:
+            return (f"None of your “{ans.content}” photos are noticeably {color}.", [])
+        return (
+            f"Your {color} photos matching “{ans.content}” — {len(ans.results)}, "
+            f"most {color} first.",
+            _refs(ans.results),
+        )
+    if not ans.results:
+        return (f"I didn’t find noticeably {color} photos in your library.", [])
+    return (
+        f"Here are your most {color} photos ({len(ans.results)} shown, "
+        f"strongest first). This uses each photo’s color makeup, not keywords.",
+        _refs(ans.results),
+    )
+
+
+def _prose_search(query: str, ans: QueryAnswer) -> tuple[str, list[dict]]:
+    if not ans.results:
+        return (
+            f"I couldn’t find anything matching “{query}”. Make sure the folder "
+            "is indexed in the Library tab, or try describing it differently.",
+            [],
+        )
+    bits = []
+    if ans.object_hits:
+        bits.append(f"{ans.object_hits} where I detected a {ans.detected_object}")
+    if ans.description_hits:
+        bits.append(f"{ans.description_hits} from AI descriptions")
+    note = (" — " + ", ".join(bits)) if bits else ""
+    return (f"Here are {len(ans.results)} photos matching “{query}”{note}.", _refs(ans.results))
