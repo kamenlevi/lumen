@@ -26,7 +26,7 @@
     {#each results as r (r.id)}
       <button
         type="button"
-        on:click={() => open(r)}
+        onclick={() => open(r)}
         class="group relative aspect-square overflow-hidden rounded-md bg-neutral-900 {r.keeper === true ? 'ring-2 ring-amber-400' : 'ring-1 ring-neutral-800 hover:ring-neutral-600'}">
         <img
           src={api.photoThumbUrl(r.id)}

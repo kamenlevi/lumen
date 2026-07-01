@@ -48,8 +48,20 @@
     }
   }
 
+  // Native confirm() dialogs don't work reliably inside the Linux webview,
+  // so removal is a two-click arm/confirm instead.
+  let armedRemove = $state<string | null>(null);
+  let disarmTimer: ReturnType<typeof setTimeout> | null = null;
+
   async function remove(path: string) {
-    if (!confirm(`Remove ${path} and forget its embeddings?`)) return;
+    if (armedRemove !== path) {
+      armedRemove = path;
+      if (disarmTimer) clearTimeout(disarmTimer);
+      disarmTimer = setTimeout(() => (armedRemove = null), 4000);
+      return;
+    }
+    armedRemove = null;
+    if (disarmTimer) clearTimeout(disarmTimer);
     try {
       await api.removeFolder(path);
       await refresh();
@@ -104,7 +116,7 @@
       class="rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm" />
     <button
       type="button"
-      on:click={add}
+      onclick={add}
       class="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500">
       Add folder
     </button>
@@ -118,7 +130,13 @@
   {/if}
 
   {#if folders.length === 0}
-    <p class="text-sm text-neutral-500">No folders yet. Add one to start indexing.</p>
+    <div class="rounded-lg border border-dashed border-neutral-700 bg-neutral-900/50 p-6 text-center">
+      <p class="text-sm text-neutral-300">Your library is empty.</p>
+      <p class="mt-1 text-sm text-neutral-500">
+        Add a photo folder above — Lumen indexes it locally (nothing leaves this
+        computer) and then you can search or ask about your photos in Chat.
+      </p>
+    </div>
   {/if}
 
   <ul class="space-y-2">
@@ -134,18 +152,22 @@
             <input
               type="checkbox"
               checked={!!f.watch}
-              on:change={() => toggleWatch(f.path, f.watch)}
+              onchange={() => toggleWatch(f.path, f.watch)}
               class="h-3.5 w-3.5 accent-indigo-500" />
             Watch
           </label>
-          <button on:click={() => reindex(f.path)} class="rounded bg-neutral-800 px-2 py-1 text-xs hover:bg-neutral-700">
+          <button onclick={() => reindex(f.path)} class="rounded bg-neutral-800 px-2 py-1 text-xs hover:bg-neutral-700">
             Re-index
           </button>
-          <button on:click={() => prune(f.path)} class="rounded bg-neutral-800 px-2 py-1 text-xs hover:bg-neutral-700">
+          <button onclick={() => prune(f.path)} class="rounded bg-neutral-800 px-2 py-1 text-xs hover:bg-neutral-700">
             Prune
           </button>
-          <button on:click={() => remove(f.path)} class="rounded bg-neutral-800 px-2 py-1 text-xs text-red-300 hover:bg-red-900/30">
-            Remove
+          <button
+            onclick={() => remove(f.path)}
+            class="rounded px-2 py-1 text-xs {armedRemove === f.path
+              ? 'bg-red-600 font-medium text-white'
+              : 'bg-neutral-800 text-red-300 hover:bg-red-900/30'}">
+            {armedRemove === f.path ? "Really remove?" : "Remove"}
           </button>
         </div>
         {#if p && !p.done}
@@ -171,4 +193,13 @@
       </li>
     {/each}
   </ul>
+
+  {#if folders.length > 0}
+    <a
+      href="/duplicates/"
+      class="block rounded border border-neutral-800 bg-neutral-900 p-3 text-sm text-neutral-300 hover:border-neutral-600">
+      <span class="font-medium">Find exact duplicates →</span>
+      <span class="ml-2 text-neutral-500">byte-identical copies of the same photo, safe to clear out</span>
+    </a>
+  {/if}
 </section>

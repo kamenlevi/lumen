@@ -118,18 +118,37 @@
     }
   }
 
-  async function renameActive() {
+  // Inline rename — window.prompt() doesn't work inside the Linux webview,
+  // so the title turns into a text input on click instead.
+  let editingTitle = $state(false);
+  let titleDraft = $state("");
+  let titleInputEl: HTMLInputElement | null = $state(null);
+
+  async function startRename() {
     if (activeId === null) return;
-    const next = prompt("Rename chat", title);
-    if (next && next.trim()) {
-      try {
-        const c = await api.renameChat(activeId, next.trim());
-        title = c.title;
-        await loadChats();
-      } catch (e) {
-        err = (e as Error).message;
-      }
+    titleDraft = title;
+    editingTitle = true;
+    await tick();
+    titleInputEl?.focus();
+    titleInputEl?.select();
+  }
+
+  async function commitRename() {
+    editingTitle = false;
+    const next = titleDraft.trim();
+    if (activeId === null || !next || next === title) return;
+    try {
+      const c = await api.renameChat(activeId, next);
+      title = c.title;
+      await loadChats();
+    } catch (e) {
+      err = (e as Error).message;
     }
+  }
+
+  function onTitleKey(e: KeyboardEvent) {
+    if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+    else if (e.key === "Escape") { e.preventDefault(); editingTitle = false; }
   }
 
   async function scrollToBottom() {
@@ -155,8 +174,19 @@
     return false;
   }
 
+  // First-run guidance: if nothing is indexed yet, the empty state should
+  // point at Library instead of suggesting searches that can't work.
+  let libraryEmpty = $state(false);
+  async function checkLibrary() {
+    try {
+      const folders = await api.listFolders();
+      libraryEmpty = folders.reduce((n, f) => n + f.image_count, 0) === 0;
+    } catch { /* sidecar not up yet — assume fine */ }
+  }
+
   $effect(() => {
     loadChats();
+    checkLibrary();
   });
 
   // When the compact spotlight bar submits a query, start a fresh chat with it
@@ -179,16 +209,25 @@
       <button
         type="button"
         title="History"
-        on:click={() => (drawerOpen = !drawerOpen)}
+        onclick={() => (drawerOpen = !drawerOpen)}
         class="rounded px-2 py-1 text-neutral-300 hover:bg-neutral-800">☰</button>
+      {#if editingTitle}
+        <input
+          bind:this={titleInputEl}
+          bind:value={titleDraft}
+          onblur={commitRename}
+          onkeydown={onTitleKey}
+          class="flex-1 rounded border border-neutral-600 bg-neutral-950 px-2 py-0.5 text-sm text-neutral-100 focus:outline-none" />
+      {:else}
+        <button
+          type="button"
+          onclick={startRename}
+          class="flex-1 truncate text-left text-sm font-medium text-neutral-200 hover:text-white"
+          title="Click to rename">{title}</button>
+      {/if}
       <button
         type="button"
-        on:click={renameActive}
-        class="flex-1 truncate text-left text-sm font-medium text-neutral-200 hover:text-white"
-        title="Click to rename">{title}</button>
-      <button
-        type="button"
-        on:click={newChat}
+        onclick={newChat}
         class="rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-700">+ New</button>
     </header>
 
@@ -198,10 +237,25 @@
 
     <div bind:this={scroller} class="min-h-0 flex-1 space-y-3 overflow-auto p-4">
       {#if messages.length === 0}
-        <div class="mt-10 text-center text-sm text-neutral-500">
-          <p class="mb-1 text-neutral-400">Ask about your photos.</p>
-          <p>“sunset over water” · “are all my portraits in focus?” · “screenshots of code”</p>
-        </div>
+        {#if libraryEmpty}
+          <div class="mt-10 text-center text-sm text-neutral-500">
+            <p class="mb-1 text-neutral-300">Welcome to Lumen.</p>
+            <p class="mb-3">
+              Nothing is indexed yet — add a photo folder first, then ask me
+              anything about your pictures. Everything stays on this computer.
+            </p>
+            <a
+              href="/library/"
+              class="inline-block rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500">
+              Add a folder in Library →
+            </a>
+          </div>
+        {:else}
+          <div class="mt-10 text-center text-sm text-neutral-500">
+            <p class="mb-1 text-neutral-400">Ask about your photos.</p>
+            <p>“sunset over water” · “are all my portraits in focus?” · “screenshots of code”</p>
+          </div>
+        {/if}
       {/if}
 
       {#each messages as m (m.id)}
@@ -220,7 +274,7 @@
               {#if m.results.length}
                 <button
                   type="button"
-                  on:click={() => (pinnedMsgId = m.id)}
+                  onclick={() => (pinnedMsgId = m.id)}
                   class="ml-1 text-xs {(_isShown(m)) ? 'text-indigo-300' : 'text-neutral-500 hover:text-neutral-300'}">
                   {m.results.length} photos {(_isShown(m)) ? "· shown →" : "· show →"}
                 </button>
@@ -233,11 +287,11 @@
 
     <form
       class="flex items-end gap-2 border-t border-neutral-800 bg-neutral-900 p-3"
-      on:submit|preventDefault={send}>
+      onsubmit={(e) => { e.preventDefault(); send(); }}>
       <textarea
         bind:this={inputEl}
         bind:value={input}
-        on:keydown={onKey}
+        onkeydown={onKey}
         rows="1"
         placeholder="Ask about your photos…"
         class="max-h-32 min-h-[2.5rem] flex-1 resize-none rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm placeholder:text-neutral-600 focus:border-neutral-500 focus:outline-none"
@@ -274,13 +328,13 @@
       type="button"
       aria-label="Close history"
       class="absolute inset-0 z-10 cursor-default bg-black/40"
-      on:click={() => (drawerOpen = false)}></button>
+      onclick={() => (drawerOpen = false)}></button>
     <aside class="absolute inset-y-0 left-0 z-20 flex w-72 flex-col border-r border-neutral-800 bg-neutral-900 shadow-xl">
       <div class="flex items-center justify-between border-b border-neutral-800 px-3 py-2">
         <span class="text-sm font-medium text-neutral-200">History</span>
         <button
           type="button"
-          on:click={() => { newChat(); }}
+          onclick={() => { newChat(); }}
           class="rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-700">+ New</button>
       </div>
       <div class="min-h-0 flex-1 overflow-auto p-2">
@@ -292,7 +346,7 @@
             class="group flex items-center gap-1 rounded px-2 py-2 {c.id === activeId ? 'bg-neutral-800' : 'hover:bg-neutral-800/60'}">
             <button
               type="button"
-              on:click={() => openChat(c.id)}
+              onclick={() => openChat(c.id)}
               class="min-w-0 flex-1 text-left">
               <div class="truncate text-sm text-neutral-200">{c.title}</div>
               <div class="text-[11px] text-neutral-500">{c.message_count ?? 0} messages</div>
@@ -300,7 +354,7 @@
             <button
               type="button"
               title="Delete"
-              on:click={() => removeChat(c.id)}
+              onclick={() => removeChat(c.id)}
               class="rounded px-1.5 py-1 text-xs text-neutral-500 opacity-0 hover:text-red-400 group-hover:opacity-100">✕</button>
           </div>
         {/each}

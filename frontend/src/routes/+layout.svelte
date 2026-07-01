@@ -8,10 +8,11 @@
 
   let { children } = $props();
 
+  // Duplicates is reachable from Library (it's a cleanup chore, not a daily
+  // surface) — top-level tabs stay reserved for the things you use often.
   const tabs = [
     { href: "/chat/", label: "Chat" },
     { href: "/library/", label: "Library" },
-    { href: "/duplicates/", label: "Duplicates" },
     { href: "/models/", label: "Models" },
     { href: "/settings/", label: "Settings" },
   ];

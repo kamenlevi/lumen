@@ -7,10 +7,7 @@ use std::thread;
 use once_cell::sync::Lazy;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, RunEvent, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, RunEvent, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 static SIDECAR: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
@@ -41,16 +38,8 @@ fn show_main(app: AppHandle) {
 }
 
 #[tauri::command]
-fn hide_spotlight(app: AppHandle) {
-    if let Some(win) = app.get_webview_window("spotlight") {
-        let _ = win.hide();
-    }
-}
-
-#[tauri::command]
 fn open_in_main(app: AppHandle, route: String) {
     // Bring up the main window and navigate it to `route` (e.g. a photo page).
-    // Used by the spotlight's Enter key so a result opens in the full UI.
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
         let _ = win.unminimize();
@@ -236,10 +225,8 @@ fn spawn_sidecar(app: &AppHandle, port_slot: Arc<Mutex<Option<u16>>>) -> anyhow:
                     *port_slot.lock().unwrap() = Some(port);
                     let _ = app_clone.emit("sidecar://ready", SidecarReady { port });
                     let script = format!("window.__LUMEN_PORT = {port};");
-                    for label in ["main", "spotlight"] {
-                        if let Some(win) = app_clone.get_webview_window(label) {
-                            let _ = win.eval(&script);
-                        }
+                    if let Some(win) = app_clone.get_webview_window("main") {
+                        let _ = win.eval(&script);
                     }
                 }
             }

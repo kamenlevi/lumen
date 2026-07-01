@@ -16,7 +16,7 @@
   let mode = $state<"fit" | "actual">("fit");
   let container: HTMLDivElement | null = $state(null);
   let loaded = $state(false);
-  let dragging = false;
+  let dragging = $state(false); // read in the template (grab cursor)
   let moved = false;
   let down = { x: 0, y: 0, sl: 0, st: 0 };
   let similarTimer: ReturnType<typeof setTimeout> | null = null;
@@ -155,7 +155,7 @@
   onDestroy(clearPoll);
 </script>
 
-<svelte:window on:keydown={onKey} />
+<svelte:window onkeydown={onKey} />
 
 <section class="space-y-4 p-4">
   {#if err}
@@ -227,20 +227,26 @@
           <div class="space-y-1.5">
             <div>
               <dt class="text-[11px] uppercase tracking-wide text-neutral-500">SHA-256 · exact content</dt>
-              <dd
-                class="cursor-pointer break-all font-mono text-[11px] text-neutral-300 hover:text-indigo-300"
-                title="Click to copy"
-                onclick={() => copyHash(photo?.sha256)}>
-                {photo.sha256 ?? "— (re-index to compute)"}
+              <dd class="break-all font-mono text-[11px]">
+                <button
+                  type="button"
+                  class="break-all text-left font-mono text-neutral-300 hover:text-indigo-300"
+                  title="Click to copy"
+                  onclick={() => copyHash(photo?.sha256)}>
+                  {photo.sha256 ?? "— (re-index to compute)"}
+                </button>
               </dd>
             </div>
             <div>
               <dt class="text-[11px] uppercase tracking-wide text-neutral-500">pHash · perceptual / near-duplicate</dt>
-              <dd
-                class="cursor-pointer break-all font-mono text-[11px] text-neutral-300 hover:text-indigo-300"
-                title="Click to copy"
-                onclick={() => copyHash(photo?.phash)}>
-                {photo.phash ?? "—"}
+              <dd class="break-all font-mono text-[11px]">
+                <button
+                  type="button"
+                  class="break-all text-left font-mono text-neutral-300 hover:text-indigo-300"
+                  title="Click to copy"
+                  onclick={() => copyHash(photo?.phash)}>
+                  {photo.phash ?? "—"}
+                </button>
               </dd>
             </div>
           </div>
