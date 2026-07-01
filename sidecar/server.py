@@ -176,14 +176,19 @@ def remove_folder(path: str) -> dict[str, Any]:
     folder_id = row["id"]
     # Stop a watcher if one is running for this folder.
     watcher_manager().stop(folder_id)
-    image_ids = [r["id"] for r in conn.execute(
-        "SELECT id FROM images WHERE folder_id = ?", (folder_id,)
-    )]
-    if image_ids:
-        qs = ",".join("?" * len(image_ids))
-        conn.execute(f"DELETE FROM image_vecs WHERE id IN ({qs})", image_ids)
+    images = conn.execute(
+        "SELECT id, path, thumb_path FROM images WHERE folder_id = ?", (folder_id,)
+    ).fetchall()
+    if images:
+        qs = ",".join("?" * len(images))
+        conn.execute(f"DELETE FROM image_vecs WHERE id IN ({qs})",
+                     [r["id"] for r in images])
     conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
     conn.commit()
+    # Cached thumbs/previews are keyed by path — drop them too or they leak.
+    from .thumb import delete_artifacts
+    for r in images:
+        delete_artifacts(r["path"], r["thumb_path"])
     return {"ok": True}
 
 
@@ -323,7 +328,9 @@ def delete_photo(photo_id: int, trash: bool = True) -> dict[str, Any]:
     has no FK cascade, so it's cleaned explicitly; quality/color/vlm rows
     cascade via ON DELETE CASCADE."""
     conn = db.connect()
-    row = conn.execute("SELECT id, path FROM images WHERE id = ?", (photo_id,)).fetchone()
+    row = conn.execute(
+        "SELECT id, path, thumb_path FROM images WHERE id = ?", (photo_id,)
+    ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Photo not indexed")
     trashed = False
@@ -339,6 +346,8 @@ def delete_photo(photo_id: int, trash: bool = True) -> dict[str, Any]:
     conn.execute("DELETE FROM image_vecs WHERE id = ?", (photo_id,))
     conn.execute("DELETE FROM images WHERE id = ?", (photo_id,))
     conn.commit()
+    from .thumb import delete_artifacts
+    delete_artifacts(row["path"], row["thumb_path"])
     return {"ok": True, "trashed": trashed, "path": row["path"]}
 
 
@@ -350,19 +359,30 @@ def photo_neighbors(photo_id: int) -> dict[str, Any]:
     row = conn.execute("SELECT folder_id FROM images WHERE id = ?", (photo_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Not found")
-    ids = [r["id"] for r in conn.execute(
-        "SELECT id FROM images WHERE folder_id = ? ORDER BY COALESCE(taken_at, ''), path",
-        (row["folder_id"],),
-    )]
-    try:
-        i = ids.index(photo_id)
-    except ValueError:
-        return {"prev": None, "next": None, "index": None, "total": len(ids)}
-    at = lambda j: ids[j] if 0 <= j < len(ids) else None
+    # One SQL window query instead of loading every id in the folder into
+    # Python — this runs on each arrow-key press, so it must stay cheap even
+    # for folders with tens of thousands of photos.
+    r = conn.execute(
+        """WITH ordered AS (
+               SELECT id,
+                      ROW_NUMBER() OVER (ORDER BY COALESCE(taken_at, ''), path) AS rn,
+                      COUNT(*) OVER () AS total
+                 FROM images WHERE folder_id = ?
+           )
+           SELECT o.rn, o.total,
+                  (SELECT id FROM ordered WHERE rn = o.rn - 1) AS prev,
+                  (SELECT id FROM ordered WHERE rn = o.rn + 1) AS next,
+                  (SELECT id FROM ordered WHERE rn = o.rn - 2) AS prev2,
+                  (SELECT id FROM ordered WHERE rn = o.rn + 2) AS next2
+             FROM ordered o WHERE o.id = ?""",
+        (row["folder_id"], photo_id),
+    ).fetchone()
+    if not r:
+        return {"prev": None, "next": None, "index": None, "total": 0}
     return {
-        "prev": at(i - 1), "next": at(i + 1),
-        "prev2": at(i - 2), "next2": at(i + 2),
-        "index": i + 1, "total": len(ids),
+        "prev": r["prev"], "next": r["next"],
+        "prev2": r["prev2"], "next2": r["next2"],
+        "index": r["rn"], "total": r["total"],
     }
 
 

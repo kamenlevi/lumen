@@ -100,8 +100,12 @@ def _build_filter_sql(
     clauses: list[str] = []
     params: list[Any] = []
     if folder:
-        clauses.append("images.path LIKE ?")
-        params.append(folder.rstrip("/") + "/%")
+        # Escape LIKE wildcards so a folder literally named "100%_photos"
+        # matches itself, not everything.
+        esc = (folder.rstrip("/")
+               .replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_"))
+        clauses.append(r"images.path LIKE ? ESCAPE '\'")
+        params.append(esc + "/%")
     if camera:
         clauses.append("images.camera = ?")
         params.append(camera)
@@ -196,7 +200,8 @@ def search_by_color(
 ) -> list[SearchResult]:
     """Find photos containing a named color, scored by how much of that hue
     they contain. Special words: 'colorful'/'vibrant', 'monochrome'/'black and
-    white'. Scoring runs in Python over the stored hue histograms."""
+    white'. Two phases so it scales: score the small histogram rows first,
+    then hydrate full metadata only for the winners."""
     import json as _json
 
     conn = db.connect()
@@ -205,21 +210,18 @@ def search_by_color(
     if candidate_ids is not None:
         if not candidate_ids:
             return []
-        where = f" AND images.id IN ({','.join('?' * len(candidate_ids))})"
+        where = f" AND cm.image_id IN ({','.join('?' * len(candidate_ids))})"
         params.extend(candidate_ids)
+
+    # Phase 1: histograms only (3 tiny columns, no joins).
     rows = conn.execute(f"""
-        SELECT images.id, images.path, images.thumb_path, images.w, images.h,
-               images.taken_at, images.camera, images.lat, images.lon,
-               q.sharpness, q.is_blurry, q.is_dark, q.is_bright, q.subject_out_of_focus,
-               cm.color_hist, cm.colorfulness, cm.dominant_hex
-          FROM images
-          JOIN color_metrics cm ON cm.image_id = images.id
-     LEFT JOIN quality_metrics q ON q.image_id = images.id
+        SELECT cm.image_id AS id, cm.color_hist, cm.colorfulness
+          FROM color_metrics cm
          WHERE cm.color_hist IS NOT NULL{where}
     """, params).fetchall()
 
     word = color.lower()
-    scored: list[tuple[float, Any]] = []
+    scored: list[tuple[float, int]] = []
     for r in rows:
         cf = r["colorfulness"] or 0.0
         if word in ("colorful", "vibrant", "colourful"):
@@ -236,10 +238,28 @@ def search_by_color(
             score = sum(hist[b] for b in bins)
             ok = score >= min_fraction
         if ok:
-            scored.append((score, r))
+            scored.append((score, r["id"]))
 
     scored.sort(key=lambda t: t[0], reverse=True)
-    return [_row_to_result(r, round(s, 4)) for s, r in scored[:max(1, min(top_k, 500))]]
+    top = scored[:max(1, min(top_k, 500))]
+    if not top:
+        return []
+
+    # Phase 2: hydrate full display metadata for just the winners.
+    ids = [i for _s, i in top]
+    qs = ",".join("?" * len(ids))
+    full = conn.execute(f"""
+        SELECT images.id, images.path, images.thumb_path, images.w, images.h,
+               images.taken_at, images.camera, images.lat, images.lon,
+               q.sharpness, q.is_blurry, q.is_dark, q.is_bright, q.subject_out_of_focus,
+               cm.dominant_hex
+          FROM images
+     LEFT JOIN quality_metrics q ON q.image_id = images.id
+     LEFT JOIN color_metrics cm ON cm.image_id = images.id
+         WHERE images.id IN ({qs})
+    """, ids).fetchall()
+    by_id = {r["id"]: r for r in full}
+    return [_row_to_result(by_id[i], round(s, 4)) for s, i in top if i in by_id]
 
 
 # Words that map to an object the detector knows (COCO classes). Searching

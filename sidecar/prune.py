@@ -12,15 +12,21 @@ import sys
 from pathlib import Path
 
 from . import db
+from .thumb import delete_artifacts
 
 
-def _delete_rows(conn, ids: list[int]) -> int:
-    if not ids:
+def _delete_rows(conn, rows: list) -> int:
+    """Drop image rows (given as sqlite Rows with id/path/thumb_path) plus
+    their vectors and cached thumbnail/preview files."""
+    if not rows:
         return 0
+    ids = [r["id"] for r in rows]
     qs = ",".join("?" * len(ids))
     conn.execute(f"DELETE FROM image_vecs WHERE id IN ({qs})", ids)
     conn.execute(f"DELETE FROM images WHERE id IN ({qs})", ids)
     conn.commit()
+    for r in rows:
+        delete_artifacts(r["path"], r["thumb_path"])
     return len(ids)
 
 
@@ -30,25 +36,27 @@ def prune_paths(paths: list[str]) -> int:
         return 0
     conn = db.connect()
     qs = ",".join("?" * len(paths))
-    rows = conn.execute(f"SELECT id FROM images WHERE path IN ({qs})", paths).fetchall()
-    return _delete_rows(conn, [r["id"] for r in rows])
+    rows = conn.execute(
+        f"SELECT id, path, thumb_path FROM images WHERE path IN ({qs})", paths
+    ).fetchall()
+    return _delete_rows(conn, rows)
 
 
 def prune_folder(folder_id: int) -> int:
     """Drop rows in `folder_id` whose files don't exist on disk anymore."""
     conn = db.connect()
     rows = conn.execute(
-        "SELECT id, path FROM images WHERE folder_id = ?", (folder_id,)
+        "SELECT id, path, thumb_path FROM images WHERE folder_id = ?", (folder_id,)
     ).fetchall()
-    dead = [r["id"] for r in rows if not Path(r["path"]).exists()]
+    dead = [r for r in rows if not Path(r["path"]).exists()]
     return _delete_rows(conn, dead)
 
 
 def prune_all() -> int:
     """Drop every image row whose file is gone."""
     conn = db.connect()
-    rows = conn.execute("SELECT id, path FROM images").fetchall()
-    dead = [r["id"] for r in rows if not Path(r["path"]).exists()]
+    rows = conn.execute("SELECT id, path, thumb_path FROM images").fetchall()
+    dead = [r for r in rows if not Path(r["path"]).exists()]
     return _delete_rows(conn, dead)
 
 

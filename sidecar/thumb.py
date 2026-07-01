@@ -109,6 +109,20 @@ def preview_path_for(image_path: Path) -> Path:
     return preview_dir() / h[:2] / f"{h}.jpg"
 
 
+def delete_artifacts(image_path: str | Path, thumb_path: str | None = None) -> None:
+    """Remove the cached thumbnail + preview for an image that left the
+    library. Cache files are keyed by the image's path, so without this
+    they'd be orphaned on disk forever."""
+    p = Path(image_path)
+    candidates = [preview_path_for(p)]
+    candidates.append(Path(thumb_path) if thumb_path else thumb_path_for(p))
+    for f in candidates:
+        try:
+            f.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def make_preview(image_path: Path, img: Image.Image | None = None) -> Path:
     """Generate a ~1600px JPEG for fast on-screen viewing (a 20MP original is
     wasteful to decode for a 1080p screen). Lazily built on first view, cached."""
